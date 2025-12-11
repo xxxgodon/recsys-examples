@@ -39,7 +39,7 @@ try:
 except ImportError:
     SUPPORT_TRAINING = False
 
-
+# 
 def hstu_preprocess_embeddings(
     embeddings: Dict[str, JaggedTensor],
     batch: RankingBatch,
@@ -276,7 +276,7 @@ class HSTUBlockPreprocessor(torch.nn.Module):
         self._scaling_seqlen = config.scaling_seqlen
 
     @output_nvtx_hook(nvtx_tag="HSTUBlock preprocess", hook_key_or_attr_name="values")
-    def forward(
+    def forward(# 首先会选择某些特征是否经过MLP处理，然后进行interleave，将action放到item之后，然后给每个样本的token给concatenation起来，然后padding不太理解，最后是会增加rab
         self,
         embeddings: Dict[str, JaggedTensor],
         batch: RankingBatch,

@@ -148,7 +148,7 @@ def parse_args():
         "--mlp_dims",
         type=str,
         default="128,64,32",
-        help="dimension of MLP layer，separating with commas",
+        help="dimension of MLP layer, separating with commas",
     )
     parser.add_argument(
         "--save_dir",

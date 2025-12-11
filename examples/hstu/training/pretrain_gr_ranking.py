@@ -82,10 +82,10 @@ def main():
     parser.add_argument("--gin-config-file", type=str)
     args = parser.parse_args()
     gin.parse_config_file(args.gin_config_file)
-    trainer_args = TrainerArgs()
-    dataset_args, embedding_args = get_dataset_and_embedding_args()
-    network_args = NetworkArgs()
-    optimizer_args = OptimizerArgs()
+    trainer_args = TrainerArgs()#TrainerArgs(train_batch_size=128, eval_batch_size=128, eval_interval=100, log_interval=100, max_train_iters=2000, max_eval_iters=None, seed=1234, profile=True, profile_step_start=100, profile_step_end=200, ckpt_save_interval=-1, ckpt_save_dir='./checkpoints', ckpt_load_dir='', pipeline_type='prefetch')
+    dataset_args, embedding_args = get_dataset_and_embedding_args()#DatasetArgs(dataset_name='ml-20m', max_sequence_length=200, dataset_path=None, max_num_candidates=20, shuffle=True). [EmbeddingArgs(feature_names=['rating'], table_name='action_weights', item_vocab_size_or_capacity=11, sharding_type='data_parallel'), DynamicEmbeddingArgs(feature_names=['movie_id'], table_name='movie_id', item_vocab_size_or_capacity=10000000, sharding_type='model_parallel', global_hbm_for_values=None, item_vocab_gpu_capacity=None, item_vocab_gpu_capacity_ratio=0.5, evict_strategy='lru', caching=True), DynamicEmbeddingArgs(feature_names=['user_id'], table_name='user_id', item_vocab_size_or_capacity=10000000, sharding_type='model_parallel', global_hbm_for_values=None, item_vocab_gpu_capacity=None, item_vocab_gpu_capacity_ratio=0.5, evict_strategy='lru', caching=True)]
+    network_args = NetworkArgs()#NetworkArgs(num_layers=1, hidden_size=128, num_attention_heads=4, kv_channels=128, hidden_dropout=0.2, norm_epsilon=1e-05, is_causal=True, dtype_str='bfloat16', kernel_backend='cutlass', target_group_size=1, num_position_buckets=8192, recompute_input_layernorm=False, recompute_input_silu=False, item_embedding_dim=-1, contextual_embedding_dim=-1, scaling_seqlen=-1)
+    optimizer_args = OptimizerArgs()#OptimizerArgs(optimizer_str='adam', learning_rate=0.001, adam_beta1=0.9, adam_beta2=0.98, adam_eps=1e-08)
     tp_args = TensorModelParallelArgs()
 
     init.initialize_distributed()
@@ -98,7 +98,7 @@ def main():
         f"distributed env initialization done. Free cuda memory: {free_memory / (1024 ** 2):.2f} MB"
     )
     hstu_config = create_hstu_config(network_args, tp_args)
-    task_config = create_ranking_config(dataset_args, network_args, embedding_args)
+    task_config = create_ranking_config(dataset_args, network_args, embedding_args)#RankingConfig(embedding_configs=[ShardedEmbeddingConfig(feature_names=['rating'], table_name='action_weights', vocab_size=11, dim=128, sharding_type='data_parallel'), ShardedEmbeddingConfig(feature_names=['movie_id'], table_name='movie_id', vocab_size=10000000, dim=128, sharding_type='model_parallel'), ShardedEmbeddingConfig(feature_names=['user_id'], table_name='user_id', vocab_size=10000000, dim=128, sharding_type='model_parallel')], user_embedding_norm='l2_norm', item_l2_norm=False, prediction_head_arch=[512, 10], prediction_head_act_type='relu', prediction_head_bias=True, num_tasks=1, eval_metrics=('AUC',))
     model = get_ranking_model(hstu_config=hstu_config, task_config=task_config)
 
     dynamic_options_dict = create_dynamic_optitons_dict(

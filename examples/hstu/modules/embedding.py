@@ -56,7 +56,7 @@ def create_data_parallel_sharding_infos_by_sharding(
     module: EmbeddingCollectionInterface,
     table_name_to_parameter_sharding: Dict[str, ParameterSharding],
     fused_params: Optional[Dict[str, Any]],
-) -> List[EmbeddingShardingInfo]:
+    ) -> List[EmbeddingShardingInfo]:
     if fused_params is None:
         fused_params = {}
 
@@ -268,7 +268,7 @@ class DataParallelEmbeddingCollection(torch.nn.Module):
         )
         return kjt.to_dict()
 
-
+# 这个好像是用到了 torchrec 的 EmbeddingCollection 来做分布式的 Embedding lookup
 class ShardedEmbedding(torch.nn.Module):
     """
     ShardedEmbedding is a module for handling sharded embeddings in a distributed setting.
@@ -297,30 +297,30 @@ class ShardedEmbedding(torch.nn.Module):
                 ],
                 device=torch.device("meta"),
             )
-
-        model_parallel_embedding_configs = []
-        data_parallel_embedding_configs = []
+        # model parallel and data parallel有什么区别呢？参考copilot回答
+        model_parallel_embedding_configs = []# 大数据量embedding table需要做model parallel，每个机器存储一部分embedding table  # 大表（如 UserID, ItemID） -> 切分到多张卡 -> Model Parallel
+        data_parallel_embedding_configs = []# 类似action的这种小数据量embedding table可以在每个机器上复制一份，做data parallel  # 小表（如性别、年龄、Action类型） -> 复制到每张卡 -> Data Parallel
         for config in embedding_configs:
             if config.sharding_type == "data_parallel":
                 data_parallel_embedding_configs.append(config)
             else:
                 model_parallel_embedding_configs.append(config)
 
-        self._model_parallel_embedding_collection = (
+        self._model_parallel_embedding_collection = (# 这个就是embedding lookup的module
             create_embedding_collection(configs=model_parallel_embedding_configs)
             if len(model_parallel_embedding_configs) > 0
             else None
         )
 
         if len(data_parallel_embedding_configs) > 0:
-            self._data_parallel_embedding_collection = (
+            self._data_parallel_embedding_collection = (# 这个就是embedding lookup的module
                 create_embedding_collection(configs=data_parallel_embedding_configs)
                 if len(data_parallel_embedding_configs) > 0
                 else None
             )
             self._side_stream = torch.cuda.Stream()
         else:
-            self._data_parallel_embedding_collection = None
+            self._data_parallel_embedding_collection = None# 这个就是embedding lookup的module
             self._side_stream = None
         self.freeze_embedding = os.environ.get("FREEZE_EMBEDDING", "0")
         # for nvtx setting, we need to get the tensor from the output dict and set it back to the output dict

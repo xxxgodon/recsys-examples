@@ -50,7 +50,7 @@ class RankingGR(BaseModel):
         self._hstu_config = hstu_config
         self._task_config = task_config
 
-        self._embedding_collection = ShardedEmbedding(task_config.embedding_configs)
+        self._embedding_collection = ShardedEmbedding(task_config.embedding_configs)# 嵌入层embedding lookup module
 
         self._hstu_block = HSTUBlock(hstu_config)
         self._mlp = MLP(

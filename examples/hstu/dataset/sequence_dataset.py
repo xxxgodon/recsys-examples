@@ -103,7 +103,7 @@ class SequenceDataset(IterableDataset[Batch]):
         self._device = torch.cpu.current_device()
 
         if nrows is None:
-            self._seq_logs_frame = pd.read_csv(seq_logs_file, delimiter=",")
+            self._seq_logs_frame = pd.read_csv(seq_logs_file, delimiter=",")  # 数据格式：user_id movie_id rating unix_timestamp ----> 1  [924, 919, 2683, 1584, 1079, 653, 2959, 337, 1...  [6, 6, 6, 6, 7, 5, 7, 6, 5, 7, 7, 6, 7, 6, 5, ...  [1094785598, 1094785621, 1094785650, 109478565...
         else:
             self._seq_logs_frame = pd.read_csv(
                 seq_logs_file, delimiter=",", nrows=nrows
@@ -183,8 +183,8 @@ class SequenceDataset(IterableDataset[Batch]):
     def __len__(self) -> int:
         return math.ceil(self._num_samples / self._global_batch_size)
 
-    def __iter__(self) -> Iterator[Batch]:
-        for i in range(len(self)):
+    def __iter__(self) -> Iterator[Batch]:#好像这个地方是数据加载&&转换的关键步骤
+        for i in range(len(self)):#总共len(self)个batch
             local_batch_start = (
                 i * self._global_batch_size + self._rank * self._batch_size
             )
@@ -203,7 +203,7 @@ class SequenceDataset(IterableDataset[Batch]):
             num_candidates: List[int] = []
             # labels dtype: int
             labels: List[int] = []
-            for sample_id in sample_ids:
+            for sample_id in sample_ids:# 逐样本处理
                 data = self._seq_logs_frame.iloc[sample_id]
                 for contextual_feature_name in self._contextual_feature_names:
                     contextual_features[contextual_feature_name].append(
@@ -216,8 +216,8 @@ class SequenceDataset(IterableDataset[Batch]):
                     raise ValueError(
                         f"max_num_candidates: {self._max_num_candidates} > len(item_seq): {len(item_seq)}, please check data or decrease max_num_candidates"
                     )
-                candidate_seq = item_seq[-self._max_num_candidates :]
-                item_seq = item_seq[: -self._max_num_candidates]
+                candidate_seq = item_seq[-self._max_num_candidates :]#划分出来最后的候选集
+                item_seq = item_seq[: -self._max_num_candidates]#剩余的作为历史序列
 
                 item_seq = maybe_truncate_seq(
                     item_seq,
@@ -252,7 +252,7 @@ class SequenceDataset(IterableDataset[Batch]):
                         else action_seq
                     )
                     labels.extend(label)
-            if len(item_features_seqlen) < self._batch_size:
+            if len(item_features_seqlen) < self._batch_size:#填充 (Padding) - 如果 Batch 不满
                 padded_size = self._batch_size - len(item_features_seqlen)
                 for name in self._contextual_feature_names:
                     contextual_features_seqlen[name] += [0 for _ in range(padded_size)]
@@ -276,7 +276,7 @@ class SequenceDataset(IterableDataset[Batch]):
                     for name in self._contextual_feature_names
                 ]
             ).view(-1)
-            features = KeyedJaggedTensor.from_lengths_sync(
+            features = KeyedJaggedTensor.from_lengths_sync(  # 构建 KeyedJaggedTensor (KJT)
                 keys=self._contextual_feature_names
                 + [self._item_feature_name, self._action_feature_name],
                 values=torch.concat(

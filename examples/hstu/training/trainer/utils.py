@@ -270,8 +270,8 @@ def get_data_loader(
     else:
         assert isinstance(dataset_args, DatasetArgs)
         (
-            train_dataset,
-            test_dataset,
+            train_dataset,#这里是拿到了用户划分的训练集 # 数据格式：user_id movie_id rating unix_timestamp ----> 1  [924, 919, 2683, 1584, 1079, 653, 2959, 337, 1...  [6, 6, 6, 6, 7, 5, 7, 6, 5, 7, 7, 6, 7, 6, 5, ...  [1094785598, 1094785621, 1094785650, 109478565...
+            test_dataset,#这里是拿到了用户划分的测试集
         ) = dataset.sequence_dataset.get_dataset(
             dataset_name=dataset_args.dataset_name,
             dataset_path=dataset_args.dataset_path,

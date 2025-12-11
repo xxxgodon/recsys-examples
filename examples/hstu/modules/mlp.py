@@ -37,7 +37,7 @@ except:
     BaseModule = torch.nn.Module
 from modules.utils import init_mlp_weights_optional_bias
 
-
+# 外接的小MLP，计算ctr或者是其他任务的loos的时候用到的
 class MLP(BaseModule):  # type: ignore
     """
     Multi-Layer Perceptron (MLP) module wrapper for processing jagged data.

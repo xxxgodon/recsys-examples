@@ -20,7 +20,7 @@ from megatron.core.transformer.module import MegatronModule
 from modules.jagged_data import JaggedData
 from ops.fused_hstu_op import fused_hstu_op
 
-
+# 用到的attention layer
 class FusedHSTULayer(MegatronModule):
     """
     x = ln(x)
