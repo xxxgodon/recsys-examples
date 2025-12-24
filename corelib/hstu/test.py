@@ -597,7 +597,7 @@ def _hstu_attention_maybe_from_cache(
     alpha: float,
     upcast: bool = True,
     is_delta_q: bool = False,
-):
+    ):
     torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
     B: int = q_offsets.size(0) - 1
     dtype_out = q.dtype

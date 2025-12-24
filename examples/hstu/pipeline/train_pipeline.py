@@ -633,7 +633,7 @@ class PrefetchTrainPipelineSparseDist(TrainPipelineSparseDist[In, Out]):
         )
         self._batch_ip3: Optional[In] = None
 
-    def _fill_pipeline(self, dataloader_iter: Iterator[In]) -> None:
+    def _fill_pipeline(self, dataloader_iter: Iterator[In]) -> None:#现在调试调用的这个fill方法
         # pipeline is already filled
         if self._batch_i and self._batch_ip1 and self._batch_ip2:
             return
@@ -853,26 +853,26 @@ class JaggedMegatronPrefetchTrainPipelineSparseDist(
             pipeline_postproc,
             custom_model_fwd,
         )
-
+    # 这里好像运行的时候的主函数
     def progress(self, dataloader_iter: Iterator[In]) -> Tuple[torch.Tensor, Out]:
-        self._fill_pipeline(dataloader_iter)
+        self._fill_pipeline(dataloader_iter)# 1. 填充流水线：确保有足够的批次在处理队列中
 
-        if self._model.training:
+        if self._model.training:# 2. 梯度清零 (Zero Grad)
             with nvtx.annotate("## zero_grad ##"):
                 if hasattr(self._model.module, "zero_grad_buffer"):
                     self._model.module.zero_grad_buffer()
                 self._optimizer.zero_grad()
 
-        with nvtx.annotate("## wait_for_batch ##"):
+        with nvtx.annotate("## wait_for_batch ##"):# 3. 等待当前批次 (Batch i) 的预取完成
             _wait_for_batch(cast(In, self._batch_i), self._prefetch_stream)
 
-        with nvtx.annotate("## copy_batch_to_gpu ##"):
-            self._batch_ip2 = self._copy_batch_to_gpu(dataloader_iter)
-        with nvtx.annotate("## wait_sparse_data_dist ##"):
+        with nvtx.annotate("## copy_batch_to_gpu ##"):# 4. [并行操作 A] 启动 Batch i+2 的数据拷贝 (CPU -> GPU)
+            self._batch_ip2 = self._copy_batch_to_gpu(dataloader_iter)# 这会在后台流中运行，不阻塞主计算流
+        with nvtx.annotate("## wait_sparse_data_dist ##"):# 5. 等待 Batch i 的稀疏数据分发完成 (All-to-All 通信)
             self._wait_sparse_data_dist()
         # forward
         reporting_loss = None
-        with nvtx.annotate("## forward ##"):
+        with nvtx.annotate("## forward ##"):# 6. [核心计算] 前向传播 (Forward) - Batch i
             losses, output = self._model_fwd(self._batch_i)
         with nvtx.annotate("## loss postprocess ##"):
             collective_assert(not torch.isnan(losses).any(), "loss has nan value")

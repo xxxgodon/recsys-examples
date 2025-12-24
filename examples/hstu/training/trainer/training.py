@@ -147,21 +147,21 @@ def train_with_pipeline(
     tokens_logged = torch.zeros(1).cuda().float()
     # limit the number of iters to max_train_iters
     # we support max_train_iters > n_batches, i.e. multiple epochs
-    train_loader_iter = islice(cycle(iter(train_loader)), max_train_iters)
+    train_loader_iter = islice(cycle(iter(train_loader)), max_train_iters)#创建了一个可以循环重复使用训练数据的迭代器，并限制了最大迭代次数
 
     # every eval iter
     n = trainer_args.eval_interval if trainer_args.eval_interval else max_train_iters
     # data loader is split into num_iters / eval_interval (iters) slices where each slice contains n batches
-    iter_slices = batched(train_loader_iter, n)
+    iter_slices = batched(train_loader_iter, n)# #============================batched(train_loader_iter, n)这里可以打断点进去调试=========================##将训练迭代器分组打包成多个"切片"，每个切片包含 n 个 batch
     start_iter = 0
     pipeline._model.train()
-    for batched_iterator in iter_slices:
+    for batched_iterator in iter_slices:#这里迭代的是每个切片
         # for one slice(every eval interval)
-        for train_iter in count(start_iter):
-            if trainer_args.profile and train_iter == trainer_args.profile_step_start:
+        for train_iter in count(start_iter):#这里迭代的是每个 batch
+            if trainer_args.profile and train_iter == trainer_args.profile_step_start:#性能分析
                 dist.barrier(device_ids=[torch.cuda.current_device()])
                 torch.cuda.profiler.start()
-            if trainer_args.profile and train_iter == trainer_args.profile_step_end:
+            if trainer_args.profile and train_iter == trainer_args.profile_step_end:#性能分析
                 torch.cuda.profiler.stop()
                 dist.barrier(device_ids=[torch.cuda.current_device()])
             if (
@@ -171,15 +171,15 @@ def train_with_pipeline(
                 save_path = os.path.join(
                     trainer_args.ckpt_save_dir, f"iter{train_iter}"
                 )
-                save_ckpts(save_path, pipeline._model, dense_optimizer)
-            try:
+                save_ckpts(save_path, pipeline._model, dense_optimizer)#定期保存模型权重
+            try:# 核心训练步 (Training Step)
                 torch.cuda.nvtx.range_push(f"step {train_iter}")
                 reporting_loss, (
                     local_loss,
                     logits,
                     labels,
                     (ddp_seqlen, ddp_num_contextual, ddp_num_candidate),
-                ) = pipeline.progress(batched_iterator)
+                ) = pipeline.progress(batched_iterator)#注意应该是这里进入到了 Train Pipeline 里面的progress函数
                 ddp_seqlens.append(ddp_seqlen.view(-1))
                 ddp_num_contextuals.append(ddp_num_contextual.view(-1))
                 ddp_num_candidates.append(ddp_num_candidate.view(-1))

@@ -50,12 +50,12 @@ class RankingGR(BaseModel):
         self._hstu_config = hstu_config
         self._task_config = task_config
 
-        self._embedding_collection = ShardedEmbedding(task_config.embedding_configs)
+        self._embedding_collection = ShardedEmbedding(task_config.embedding_configs)# 嵌入层embedding lookup module
 
-        self._hstu_block = HSTUBlock(hstu_config)
+        self._hstu_block = HSTUBlock(hstu_config)# HSTUBlock模块，包含preprocessor、多个HSTULayer、postprocessor
         self._mlp = MLP(
             hstu_config.hidden_size,
-            task_config.prediction_head_arch,
+            task_config.prediction_head_arch,# [512, 10]
             task_config.prediction_head_act_type,
             task_config.prediction_head_bias,
             device=self._device,
@@ -63,8 +63,8 @@ class RankingGR(BaseModel):
 
         # TODO, make reduction configurable
         self._loss_module = MultiTaskLossModule(
-            num_classes=task_config.prediction_head_arch[-1],
-            num_tasks=task_config.num_tasks,
+            num_classes=task_config.prediction_head_arch[-1],# 10
+            num_tasks=task_config.num_tasks,# 1
             reduction="none",
         )
         self._metric_module = get_multi_event_metric_module(
