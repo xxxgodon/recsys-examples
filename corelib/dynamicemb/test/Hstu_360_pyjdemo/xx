@@ -1,0 +1,21 @@
+# 调试360数据格式测试代码
+cd /data/pangyongjie/clouds/recsys-examples/corelib/dynamicemb/test/test_load_data
+export RANK=0
+export WORLD_SIZE=1
+export LOCAL_RANK=0
+export LOCAL_WORLD_SIZE=1
+export MASTER_ADDR=localhost
+export MASTER_PORT=12344
+python -m pdb pyj_test_example.py --train
+
+
+# 调试360数据格式测试代码
+cd /data/pangyongjie/clouds/recsys-examples/corelib/dynamicemb/test/test_load_data
+export RANK=0
+export WORLD_SIZE=1
+export LOCAL_RANK=0
+export LOCAL_WORLD_SIZE=1
+export MASTER_ADDR=localhost
+export MASTER_PORT=12344
+python -m pdb pyj_test_example.py --train --Train_data_path "./train/2025-12-21/part-00000" --Test_data_path "./train/2025-12-21/part-00001"
+
