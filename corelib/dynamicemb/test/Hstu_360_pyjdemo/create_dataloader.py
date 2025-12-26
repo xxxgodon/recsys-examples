@@ -6,6 +6,8 @@ from torchrec.sparse.jagged_tensor import KeyedJaggedTensor
 from typing import Dict, List, Tuple, Optional
 from functools import partial
 from itertools import chain
+import os
+import glob
 
 class StreamingDataset(Dataset):
     """
@@ -30,53 +32,74 @@ class StreamingDataset(Dataset):
         print(f"[Dataset] Loaded {len(self.samples)} samples from {data_path}")
     
     def _load_data(self):
-        """加载和解析数据文件"""
-        with open(self.data_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    # 格式: key \t weight \001 label \001 feature1 \001 feature2 ...
-                    parts = line.split('\t')
-                    if len(parts) < 2:
+        """加载和解析数据文件 支持单个文件或目录"""
+        file_paths = []
+        if os.path.isfile(self.data_path):
+            file_paths = [self.data_path]
+        elif os.path.isdir(self.data_path):
+            file_paths = sorted(glob.glob(os.path.join(self.data_path, 'part-*')))
+            if not file_paths:
+                # 如果没有 part-* 文件，读取所有文件
+                file_paths = sorted([
+                    os.path.join(self.data_path, f) 
+                    for f in os.listdir(self.data_path) 
+                    if os.path.isfile(os.path.join(self.data_path, f))
+                ])
+        else:
+            raise ValueError(f"Invalid path: {self.data_path}")
+        if not file_paths:
+            raise ValueError(f"No files found in: {self.data_path}")
+       
+        print(f"Loading data from {len(file_paths)} file(s)...")
+
+        for file_path in file_paths:
+            print(f"  Loading: {file_path}")
+            with open(file_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
                         continue
-                        
-                    sample_key = parts[0]
-                    feature_parts = parts[1].split('\001')
-                    if len(feature_parts) < 3:
-                        continue
-                    
-                    weight = float(feature_parts[0]) if feature_parts[0] else 1.0
-                    label = int(feature_parts[1])
-                    
-                    # 解析特征: slot_id|hash_value
-                    features = {}
-                    for feature_str in feature_parts[2:]:
-                        if not feature_str or '|' not in feature_str:
+                    try:
+                        # 格式: key \t weight \001 label \001 feature1 \001 feature2 ...
+                        parts = line.split('\t')
+                        if len(parts) < 2:
                             continue
                             
-                        slot_id, hash_value = feature_str.split('|', 1)
-                        try:
-                            hash_int = int(hash_value)
-                        except ValueError:
-                            # 如果哈希值不是整数，使用字符串哈希
-                            hash_int = hash(hash_value) % (2**32)
-                            
-                        if slot_id not in features:
-                            features[slot_id] = []
-                        features[slot_id].append(hash_int)
-                    
-                    self.samples.append({
-                        'key': sample_key,
-                        'features': features
-                    })
-                    self.labels.append(label)
-                    self.weights.append(weight)
-                    
-                except Exception as e:
-                    # print(f"Error parsing line: {line[:50]}..., Error: {e}")
-                    continue
+                        sample_key = parts[0]
+                        feature_parts = parts[1].split('\001')
+                        if len(feature_parts) < 3:
+                            continue
+                        
+                        weight = float(feature_parts[0]) if feature_parts[0] else 1.0
+                        label = int(feature_parts[1])
+                        
+                        # 解析特征: slot_id|hash_value
+                        features = {}
+                        for feature_str in feature_parts[2:]:
+                            if not feature_str or '|' not in feature_str:
+                                continue
+                                
+                            slot_id, hash_value = feature_str.split('|', 1)
+                            try:
+                                hash_int = int(hash_value)
+                            except ValueError:
+                                # 如果哈希值不是整数，使用字符串哈希
+                                hash_int = hash(hash_value) % (2**32)
+                                
+                            if slot_id not in features:
+                                features[slot_id] = []
+                            features[slot_id].append(hash_int)
+                        
+                        self.samples.append({
+                            'key': sample_key,
+                            'features': features
+                        })
+                        self.labels.append(label)
+                        self.weights.append(weight)
+                        
+                    except Exception as e:
+                        # print(f"Error parsing line: {line[:50]}..., Error: {e}")
+                        continue
     
     def _create_slot_stats(self):
         """统计出现的slot，用于调试或验证"""

@@ -67,6 +67,10 @@ from pyj_test_utils import create_data_loader
 from torch.autograd.profiler import record_function
 from einops import rearrange
 from modules.pyj_metric import CustomAUC, CustomCOPC
+from dataclasses import dataclass
+from modules.pyj_MLP import MLP
+from modules.pyj_multi_task_loss_module import MultiTaskLossModule
+from modules.pyj_TransformerBlock import TransformerBlock
 
 
 # Filter FBGEMM warning, make notebook clean
@@ -225,6 +229,7 @@ def get_sharder(args, optimizer_type):
         "show_decay_rate": show_decay_rate,
         "show_threshold": show_threshold,
         "no_show_days": no_show_days,
+        "pyj_test": 9999999,
     }
 
     fused_params = {}
@@ -428,7 +433,6 @@ def apply_dmp(model, args, training):
     return dmp
 
 # TODO: optimize function
-from dataclasses import dataclass
 @dataclass
 class SlotEmbeddingConfig:
     """SLOT embedding config datatype"""
@@ -489,9 +493,6 @@ def get_embedding_module(eb_configs):
 
 # TODO：using nvidia recsys-example's JaggedData data structure
 # from modules.jagged_data import JaggedData
-from modules.pyj_MLP import MLP
-from modules.pyj_multi_task_loss_module import MultiTaskLossModule
-from modules.pyj_TransformerBlock import TransformerBlock
 class TransformerModel(nn.Module):
     def __init__(
         self,
@@ -720,13 +721,13 @@ class preprocessor(nn.Module):
         
         # 处理成为transformer需要的输入token序列
         # TODO: 结构化输入参数
-        # 注意：现在是采样了第一个seq slot作为样例来提取lengths&&offsets 稍微验证了一下这里不用slot的length&&offsets 结果是一样的
+        # 注意：现在是采样了第一个seq slot作为样例来提取lengths&&offsets 稍微验证了一下这里不同slot的length&&offsets 结果是一样的
         item_jt = pooled_embeddings[self._SEQ_SLOTS[0]]
         # sequence_embeddings = item_jt.values()  # shape: (total_items, embedding_dim)
         sequence_embeddings_lengths = item_jt.lengths()
         sequence_embeddings_offsets = item_jt.offsets()
         sequence_jts = [pooled_embeddings[key] for key in pooled_embeddings.keys() if key in self._SEQ_SLOTS]
-        # list[seqslots: 9, tensor([batch_total_items, embedding_dim])] 注意这里的batch_total_items大小为 -> \sum_{i=1}^{B} L_i 其中B为batch size L_i为batch内第i个item的长度
+        # list[seq_slot_snum: 9, tensor([batch_total_items, embedding_dim])] 注意这里的batch_total_items大小为 -> \sum_{i=1}^{B} L_i 其中B为batch size L_i为batch内第i个item的长度
         sequence_jts_values = [jt.values() for jt in sequence_jts]
         # 处理生产 sequence_embeddings
         concatenated_sequence_features = torch.cat(sequence_jts_values, dim=-1)
@@ -739,7 +740,7 @@ class preprocessor(nn.Module):
         # TODO: interleave action tokens with item tokens
 
         # TODO: 后续有其他context特征的时候这里也需要想应的修改
-        # 收集并拼接除1801之外的所有特征
+        # 收集并拼接 pooling的 的所有特征
         candidate_jts = [pooled_embeddings[key] for key in pooled_embeddings.keys() if key in self._POOLING_SLOTS]
 
         # # TODO: 处理为jagged data    candidate处理
@@ -815,7 +816,6 @@ class preprocessor(nn.Module):
         else:
             raise ValueError(
                 "Candidate feature slots must exist. Please check your input data. "
-                "Ensure that features other than the main sequence slot '1801' are provided."
             )
 
         # TODO： 插入数据到结尾处(这里现在先不用jagged tensor这种数据格式)
