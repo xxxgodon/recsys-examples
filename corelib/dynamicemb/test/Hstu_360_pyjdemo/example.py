@@ -224,12 +224,14 @@ def get_sharder(args, optimizer_type):
         # "beta2": beta2,
         # "weight_decay": weight_decay,
         # "eps": eps,
-        "initial_g2sum": initial_g2sum,
-        "initial_scale": initial_scale,
-        "show_decay_rate": show_decay_rate,
-        "show_threshold": show_threshold,
-        "no_show_days": no_show_days,
-        "pyj_test": 9999999,
+        # "initial_g2sum": initial_g2sum,
+        "initial_accumulator_value": initial_g2sum,
+        # 下面这些好像都没有
+        # "initial_scale": initial_scale,
+        # "show_decay_rate": show_decay_rate,
+        # "show_threshold": show_threshold,
+        # "no_show_days": no_show_days,
+        # "pyj_test": 9999999,
     }
 
     fused_params = {}
@@ -381,7 +383,8 @@ def apply_dmp(model, args, training):
     eb_configs = model._embedding_module.embedding_configs()
     # optimizer_type = EmbOptimType.ADAM
     # TODO： rowwise 有什么区别呢？
-    optimizer_type = EmbOptimType.EXACT_ADAGRAD
+    # optimizer_type = EmbOptimType.EXACT_ADAGRAD
+    optimizer_type = EmbOptimType.EXACT_ROWWISE_ADAGRAD
 
     """
     After configuring the `EmbeddingCollection`, you need to configure `DynamicEmbeddingCollectionSharder`. 
