@@ -29,12 +29,10 @@ class StreamingDataset(IterableDataset):
         self.world_size = world_size
         self.file_paths = self._get_all_files()
 
-        # 文件级分片：当前 Rank 只负责一部分文件
-        # 例如 8 个文件，2 张卡。Rank0 处理 [0, 2, 4, 6], Rank1 处理 [1, 3, 5, 7]
-        self.my_files = [
-            f for i, f in enumerate(self.file_paths) 
-            if i % self.world_size == self.rank
-        ]
+        # # 文件级分片：当前 Rank 只负责一部分文件
+        # # 例如 8 个文件，2 张卡。Rank0 处理 [0, 2, 4, 6], Rank1 处理 [1, 3, 5, 7]
+        # self.my_files = self.file_paths[self.rank::self.world_size]
+        self.my_files = self.file_paths
 
         print(f"[Rank {self.rank}] Assigned {len(self.my_files)}/{len(self.file_paths)} files.")
     
@@ -103,7 +101,10 @@ class StreamingDataset(IterableDataset):
         for file_path in self.my_files:
             # print(f"[Rank {self.rank}] Reading {file_path}")
             with open(file_path, 'r', encoding='utf-8') as f:
-                for line in f:
+                for line_idx, line in enumerate(f):
+                    # 行级分片：确保每个 rank 都能处理数据
+                    if line_idx % self.world_size != self.rank:
+                        continue 
                     sample = self.parse_line(line)
                     if sample:
                         yield sample # 读一条，送一条，不占内存
