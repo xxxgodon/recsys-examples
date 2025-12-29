@@ -8,122 +8,105 @@ from functools import partial
 from itertools import chain
 import os
 import glob
+from torch.utils.data import IterableDataset
 
-class StreamingDataset(Dataset):
+
+class StreamingDataset(IterableDataset):
     """
-    处理训练数据的Dataset类
-    目前实现为内存加载模式，支持 DistributedSampler 切分
+    StreamingDataset:
+        1. 不将数据全量加载到内存
+        2. 支持多卡文件分片 (Sharding)
     """
     
-    def __init__(self, data_path: str):
+    def __init__(self, data_path: str, rank: int = 0, world_size: int = 1):
+        super().__init__()
         """
         Args:
             data_path: 训练数据文件路径
         """
         self.data_path = data_path
-        self.samples = []
-        self.labels = []
-        self.weights = []
-        self.slot_mapping = {} # 仅用于统计，实际KJT构建依赖外部传入的 ALL_SLOTS
-        
-        self._load_data()
-        self._create_slot_stats()
-            
-        print(f"[Dataset] Loaded {len(self.samples)} samples from {data_path}")
+        self.rank = rank
+        self.world_size = world_size
+        self.file_paths = self._get_all_files()
+
+        # 文件级分片：当前 Rank 只负责一部分文件
+        # 例如 8 个文件，2 张卡。Rank0 处理 [0, 2, 4, 6], Rank1 处理 [1, 3, 5, 7]
+        self.my_files = [
+            f for i, f in enumerate(self.file_paths) 
+            if i % self.world_size == self.rank
+        ]
+
+        print(f"[Rank {self.rank}] Assigned {len(self.my_files)}/{len(self.file_paths)} files.")
     
-    def _load_data(self):
-        """加载和解析数据文件 支持单个文件或目录"""
+    def _get_all_files(self):
         file_paths = []
         if os.path.isfile(self.data_path):
             file_paths = [self.data_path]
         elif os.path.isdir(self.data_path):
             file_paths = sorted(glob.glob(os.path.join(self.data_path, 'part-*')))
             if not file_paths:
-                # 如果没有 part-* 文件，读取所有文件
                 file_paths = sorted([
                     os.path.join(self.data_path, f) 
                     for f in os.listdir(self.data_path) 
-                    if os.path.isfile(os.path.join(self.data_path, f))
+                    if os.path.isfile(os.path.join(self.data_path, f)) and not f.startswith('.')
                 ])
-        else:
-            raise ValueError(f"Invalid path: {self.data_path}")
-        if not file_paths:
-            raise ValueError(f"No files found in: {self.data_path}")
-       
-        print(f"Loading data from {len(file_paths)} file(s)...")
+        return file_paths
 
-        for file_path in file_paths:
-            print(f"  Loading: {file_path}")
+    def parse_line(self, line):
+        """解析单行逻辑"""
+        try:
+            line = line.strip()
+            if not line:
+                return None
+            # 格式: key \t weight \001 label \001 feature1 \001 feature2 ...
+            parts = line.split('\t')
+            if len(parts) < 2:
+                return None
+                
+            sample_key = parts[0]
+            feature_parts = parts[1].split('\001')
+            if len(feature_parts) < 3:
+                return None
+            
+            weight = float(feature_parts[0]) if feature_parts[0] else 1.0
+            label = int(feature_parts[1])
+            
+            # 解析特征: slot_id|hash_value
+            features = {}
+            for feature_str in feature_parts[2:]:
+                if not feature_str or '|' not in feature_str:
+                    return None
+                    
+                slot_id, hash_value = feature_str.split('|', 1)
+                try:
+                    hash_int = int(hash_value)
+                except ValueError:
+                    # 如果哈希值不是整数，使用字符串哈希
+                    hash_int = hash(hash_value) % (2**32)
+                    
+                if slot_id not in features:
+                    features[slot_id] = []
+                features[slot_id].append(hash_int)
+            
+            return {
+                'key': sample_key,
+                'features': features,
+                'label': label,
+                'weight': weight
+            }
+                
+        except Exception as e:
+            # print(f"Error parsing line: {line[:50]}..., Error: {e}")
+            return None
+
+    def __iter__(self):
+        for file_path in self.my_files:
+            # print(f"[Rank {self.rank}] Reading {file_path}")
             with open(file_path, 'r', encoding='utf-8') as f:
                 for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        # 格式: key \t weight \001 label \001 feature1 \001 feature2 ...
-                        parts = line.split('\t')
-                        if len(parts) < 2:
-                            continue
-                            
-                        sample_key = parts[0]
-                        feature_parts = parts[1].split('\001')
-                        if len(feature_parts) < 3:
-                            continue
-                        
-                        weight = float(feature_parts[0]) if feature_parts[0] else 1.0
-                        label = int(feature_parts[1])
-                        
-                        # 解析特征: slot_id|hash_value
-                        features = {}
-                        for feature_str in feature_parts[2:]:
-                            if not feature_str or '|' not in feature_str:
-                                continue
-                                
-                            slot_id, hash_value = feature_str.split('|', 1)
-                            try:
-                                hash_int = int(hash_value)
-                            except ValueError:
-                                # 如果哈希值不是整数，使用字符串哈希
-                                hash_int = hash(hash_value) % (2**32)
-                                
-                            if slot_id not in features:
-                                features[slot_id] = []
-                            features[slot_id].append(hash_int)
-                        
-                        self.samples.append({
-                            'key': sample_key,
-                            'features': features
-                        })
-                        self.labels.append(label)
-                        self.weights.append(weight)
-                        
-                    except Exception as e:
-                        # print(f"Error parsing line: {line[:50]}..., Error: {e}")
-                        continue
-    
-    def _create_slot_stats(self):
-        """统计出现的slot，用于调试或验证"""
-        all_slots = set()
-        for sample in self.samples:
-            all_slots.update(sample['features'].keys())
-        sorted_slots = sorted(list(all_slots))
-        self.slot_mapping = {slot: idx for idx, slot in enumerate(sorted_slots)}
-    
-    def __len__(self):
-        return len(self.samples)
-    
-    def __getitem__(self, idx):
-        """获取单个样本"""
-        sample = self.samples[idx]
-        return {
-            'key': sample['key'],
-            'features': sample['features'], # Dict[str, List[int]]
-            'label': self.labels[idx],      # int
-            'weight': self.weights[idx]     # float
-        }
-    
-    def get_slot_mapping(self):
-        return self.slot_mapping
+                    sample = self.parse_line(line)
+                    if sample:
+                        yield sample # 读一条，送一条，不占内存
 
 def collate_to_keyed_jagged_tensor(batch: List[Dict], all_slots: List[str]) -> Dict:
     """
@@ -205,18 +188,12 @@ def create_data_loader(
     Returns:
         (dataloader, sampler, slot_mapping)
     """
-    dataset = StreamingDataset(data_path)
-    
-    sampler = None
-    if dist.is_available() and dist.is_initialized():
-        sampler = DistributedSampler(
-            dataset,
-            num_replicas=world_size,
-            rank=rank,
-            shuffle=shuffle
-        )
-        # 使用 sampler 时，DataLoader 的 shuffle 必须为 False
-        shuffle = False 
+    # dataset = StreamingDataset(data_path)
+    dataset = StreamingDataset(data_path, rank=rank, world_size=world_size)
+    num_workers=0
+
+    # [注意] IterableDataset 不能使用 DistributedSampler
+    # 因为我们已经在 Dataset 内部做了文件分片
     
     # 使用 partial 固定 all_slots 参数
     collate_fn = partial(collate_to_keyed_jagged_tensor, all_slots=all_slots)
@@ -224,11 +201,11 @@ def create_data_loader(
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=shuffle,
-        sampler=sampler,
+        shuffle=False,
+        sampler=None,
         collate_fn=collate_fn,
         num_workers=num_workers,
         pin_memory=True
     )
     
-    return dataloader, sampler, dataset.get_slot_mapping()
+    return dataloader, None, {} # sampler 返回 None

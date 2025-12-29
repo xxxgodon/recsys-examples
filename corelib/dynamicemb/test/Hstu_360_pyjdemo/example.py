@@ -843,9 +843,10 @@ class SlotMLP(nn.Module):
     def forward(self, x):
         return self.mlp(x)
 
-def train_one_epoch(model, train_dataloader, dense_optimizer, epoch, total_epochs):
+def train_one_epoch(model, train_dataloader, dense_optimizer, epoch, total_epochs, log_interval=100):
     model.train()
-    total_loss = 0
+    # total_loss = 0
+    current_interval_loss = 0 # 用于计算最近 N 个 batch 的平均 loss
 
     # rese metric
     model.module.auc_metric.reset()
@@ -872,25 +873,48 @@ def train_one_epoch(model, train_dataloader, dense_optimizer, epoch, total_epoch
                 loss.backward()# 好像是 embedding 对应的sparse optimizer 优化器会在这里自动执行
             # update
             with record_function("## optimizer ##"):
-                # TODO:
                 dense_optimizer.step()
                 dense_optimizer.zero_grad()  # 清零梯度
             
-        total_loss += loss.item()
+        # total_loss += loss.item()
+        current_interval_loss += loss.item()
 
-        if batch_idx % 100 == 0:
+        # [优化] Step 级别打印逻辑
+        if (batch_idx + 1) % log_interval == 0:
+            # 计算当前的累计指标 (Running Metric)
+            # 注意：compute() 通常比较耗时(涉及多卡同步)，不要每个 batch 都调
+            cur_auc = model.module.auc_metric.compute()
+            cur_copc = model.module.copc_metric.compute()
+            avg_loss = current_interval_loss / log_interval
+            
             print(
-                f"Epoch {epoch+1}/{total_epochs}, Batch {batch_idx}/{len(train_dataloader)}, Loss: {loss.item():.4f}"
-                )
+                f"[Train] Epoch {epoch+1}/{total_epochs} | "
+                f"Step {batch_idx + 1} | "
+                f"Loss: {avg_loss:.4f} | "
+                f"AUC: {cur_auc:.4f} | "
+                f"COPC: {cur_copc:.4f}"
+            )
+            # 重置区间 loss AUC/COPC
+            model.module.auc_metric.reset()
+            model.module.copc_metric.reset()
+            current_interval_loss = 0
 
-    # compute metric when epoch end
-    epoch_auc = model.module.auc_metric.compute()
-    epoch_copc = model.module.copc_metric.compute()
-    print(f"Epoch {epoch+1}/{total_epochs}, Train AUC: {epoch_auc:.4f}")
-    print(f"Epoch {epoch+1}/{total_epochs}, Train COPC: {epoch_copc:.4f}")
+        # if batch_idx % 100 == 0:
+        #     # print(
+        #     #     f"Epoch {epoch+1}/{total_epochs}, Batch {batch_idx}/{len(train_dataloader)}, Loss: {loss.item():.4f}"
+        #     #     )
+        #     print(
+        #         f"Epoch {epoch+1}/{total_epochs}, Batch {batch_idx}, Loss: {loss.item():.4f}"
+        #         )
+
+    # # compute metric when epoch end
+    # epoch_auc = model.module.auc_metric.compute()
+    # epoch_copc = model.module.copc_metric.compute()
     
-    avg_loss = total_loss / len(train_dataloader)
-    print(f"Epoch {epoch+1}/{total_epochs}, Average Loss: {avg_loss:.4f}")
+    # avg_loss = total_loss / len(train_dataloader)
+    # print(f"Epoch {epoch+1}/{total_epochs}, Average Loss: {avg_loss:.4f}")
+    # avg_epoch_loss = total_loss / (batch_idx + 1)
+    # print(f"==> [Train Summary] Epoch {epoch+1} Finished. Avg Loss: {avg_epoch_loss:.4f}, AUC: {epoch_auc:.4f}, COPC: {epoch_copc:.4f}")
 
 
 def test_one_epoch(model, test_dataloader, epoch, total_epochs):
@@ -915,15 +939,20 @@ def test_one_epoch(model, test_dataloader, epoch, total_epochs):
             
             loss = torch.sum(bce_losses, dim=0)
             test_loss += loss.item()
+
+            if (batch_idx + 1) % 500 == 0:
+                 print(f"[Test] Processing step {batch_idx + 1}...")
     
     # compute metric when epoch end
     epoch_auc = model.module.auc_metric.compute()
     epoch_copc = model.module.copc_metric.compute()
-    print(f"Epoch {epoch+1}/{total_epochs}, Test AUC: {epoch_auc:.4f}")
-    print(f"Epoch {epoch+1}/{total_epochs}, Test COPC: {epoch_copc:.4f}")
     
-    avg_test_loss = test_loss / len(test_dataloader)
-    print(f"Epoch {epoch+1}/{total_epochs}, Test Loss: {avg_test_loss:.4f}")
+    # avg_test_loss = test_loss / len(test_dataloader)
+    # print(f"Epoch {epoch+1}/{total_epochs}, Test Loss: {avg_test_loss:.4f}")
+    # 防止除以0
+    steps = batch_idx + 1 if batch_idx > 0 else 1
+    avg_test_loss = test_loss / steps
+    print(f"==> [Test Summary] Epoch {epoch+1} | Loss: {avg_test_loss:.4f} | AUC: {epoch_auc:.4f} | COPC: {epoch_copc:.4f}")
 
 def train(args):
     # 创建 train DataLoader
@@ -964,7 +993,8 @@ def train(args):
 
     for epoch in range(args.epochs):
         # TODO: 修改dataloader的sampler实现
-        train_sampler.set_epoch(epoch)
+        if train_sampler:
+            train_sampler.set_epoch(epoch)
         train_one_epoch(model, train_dataloader, dense_optimizer, epoch, args.epochs)
         # TODO: implement test_one_epoch
         test_one_epoch(model, test_dataloader, epoch, args.epochs)
@@ -982,7 +1012,7 @@ def inc_dump(args):
     ...
 
 
-#ALL_SLOTS = ['0', '12', '13', '14', '15', '2', '20', '92', '501', '502', '503', '504', '505', '506', '507', '509', '510', '511', '513', '514', '515', '516', '517', '518', '521', '522', '523', '524', '525', '527', '528', '529', '532', '535', '536', '537', '538', '540', '541', '547', '548', '560', '561', '562', '66', '67', '68', '69', '70', '73', '74', '77', '78', '1200', '2001', '2002', '2003', '2004', '2005', '2006', '2007', '2008', '2009', '2010', '2011', '2012', '2013', '2014', '2015', '2016', '2017', '2018', '2019', '2020', '2100', '2101', '2102', '2103', '2104', '2105', '2106', '2107', '1810', '1506', '1800', '1801', '1802', '1803', '1804', '1805', '1806', '1807', '19']
+# ALL_SLOTS = ['0', '12', '13', '14', '15', '2', '20', '92', '501', '502', '503', '504', '505', '506', '507', '509', '510', '511', '513', '514', '515', '516', '517', '518', '521', '522', '523', '524', '525', '527', '528', '529', '532', '535', '536', '537', '538', '540', '541', '547', '548', '560', '561', '562', '66', '67', '68', '69', '70', '73', '74', '77', '78', '1200', '2001', '2002', '2003', '2004', '2005', '2006', '2007', '2008', '2009', '2010', '2011', '2012', '2013', '2014', '2015', '2016', '2017', '2018', '2019', '2020', '2100', '2101', '2102', '2103', '2104', '2105', '2106', '2107', '1810', '1506', '1800', '1801', '1802', '1803', '1804', '1805', '1806', '1807', '19']
 
 def main():
     args = parse_args()
