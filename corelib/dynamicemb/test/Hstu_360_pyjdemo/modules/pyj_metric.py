@@ -1,6 +1,8 @@
 import torch
 from torchmetrics import AUROC
 from torchmetrics.metric import Metric
+import numpy as np
+
 
 class CustomAUC(Metric):
     def __init__(self, task="binary", num_classes=None, **kwargs):
@@ -38,3 +40,51 @@ class CustomCOPC(Metric):
     def reset(self):
         self.total_clicks.zero_()
         self.total_pred_clicks.zero_()
+
+
+class StreamingAUC:
+    def __init__(self, num_bins=1000):
+        self.num_bins = num_bins
+        self.reset()
+
+    def reset(self):
+        self.pos_hist = np.zeros(self.num_bins, dtype=np.float64)
+        self.neg_hist = np.zeros(self.num_bins, dtype=np.float64)
+
+    def update(self, preds, labels):
+        preds = preds.detach().cpu().numpy().flatten()
+        labels = labels.detach().cpu().numpy().flatten()
+        
+        # 量化成区间
+        bins = np.floor(preds * (self.num_bins - 1)).astype(int)
+
+        for b, y in zip(bins, labels):
+            if y > 0.5:
+                self.pos_hist[b] += 1
+            else:
+                self.neg_hist[b] += 1
+
+    def compute(self):
+        """基于桶统计得到近似 AUC"""
+        cum_neg = 0
+        auc = 0
+
+        for b in range(self.num_bins):
+            pos = self.pos_hist[b]
+            neg = self.neg_hist[b]
+
+            # 所有 neg 在前（pair）
+            auc += pos * cum_neg
+
+            # 相同桶内部，pos & neg 随机排序 → 贡献 0.5
+            auc += pos * neg * 0.5
+
+            cum_neg += neg
+
+        total_pos = self.pos_hist.sum()
+        total_neg = self.neg_hist.sum()
+
+        if total_pos == 0 or total_neg == 0:
+            return 0.5
+
+        return auc / (total_pos * total_neg)

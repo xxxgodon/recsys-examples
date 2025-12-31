@@ -10,6 +10,9 @@ import os
 import glob
 from torch.utils.data import IterableDataset
 
+# parquet
+import pyarrow.dataset as ds
+import pyarrow as pa
 
 class StreamingDataset(IterableDataset):
     """
@@ -210,3 +213,119 @@ def create_data_loader(
     )
     
     return dataloader, None, {} # sampler 返回 None
+
+class ParquetArrowDataLoader:
+    def __init__(self, data_dir, batch_size=1024, keys_config=None, world_size=1, rank=0):
+        """
+        keys_config:
+        {
+            "sparse": {
+                "ad_id": None,                # 单值
+                "user_id": None,              # 单值
+                "cate_seq": "cate_seq_len"    # 序列列 -> len列名
+            },
+            "label": "click"
+        }
+        """
+        
+        self.data_dir = data_dir
+        self.batch_size = batch_size
+        self.keys_config = keys_config
+        self.world_size = world_size
+        self.rank = rank
+
+
+        all_files = [
+            os.path.join(self.data_dir, f)
+            for f in os.listdir(self.data_dir)
+            if f.endswith(".parquet")
+        ]
+        all_files.sort()
+
+        my_files = all_files[rank::world_size]
+
+        self.dataset = ds.dataset(my_files, format="parquet")
+    
+
+    def __iter__(self):
+
+        scanner = self.dataset.scanner(
+            batch_size=self.batch_size,
+            fragment_readahead=16,
+            batch_readahead=8,
+        )
+
+        buffer = None  # type: Optional[pa.Table]
+
+        for batch in scanner.to_batches():
+            if batch.num_rows == self.batch_size:
+                yield self._process_batch(batch)
+                continue
+
+            batch = pa.Table.from_batches([batch])
+            if buffer is None:
+                buffer = batch
+            else:
+                buffer = pa.concat_tables([buffer, batch])
+                #buffer = buffer.combine_chunks()
+
+            while buffer.num_rows >= self.batch_size:
+
+                out = buffer.slice(0, self.batch_size)
+                yield self._process_batch(out)
+
+                buffer = buffer.slice(self.batch_size)
+
+
+        yield None
+
+    def _process_batch(self, batch):
+        
+        kjt_values = []
+        kjt_lengths = []
+        kjt_keys = []
+
+        for key, len_key in self.keys_config["sparse"].items():
+            col = batch.column(key)
+            
+            # 只有序列特征才 combine_chunks
+            if len_key is not None and isinstance(col, pa.ChunkedArray):
+                col = col.combine_chunks()
+
+            # ===== 序列特征 =====
+            if len_key is not None:
+                seq_lengths = batch.column(len_key)
+                
+                offsets = col.offsets.to_numpy()
+                start, end = int(offsets[0]), int(offsets[-1])
+                values_slice = col.values.slice(start, end - start)
+
+                #flat_values = torch.tensor(values_slice.to_numpy(), dtype=torch.long)
+                flat_values = torch.from_numpy(values_slice.to_numpy()).long()
+                
+                #lengths = torch.tensor(seq_lengths, dtype=torch.long)
+                lengths = torch.from_numpy(seq_lengths.to_numpy()).long()
+            else:
+                # ===== 单值特征 =====
+                #flat_values = torch.tensor(col.to_numpy(), dtype=torch.long)
+                flat_values = torch.from_numpy(col.to_numpy()).long()
+                lengths = torch.ones(len(flat_values), dtype=torch.long)
+
+            kjt_values.append(flat_values)
+            kjt_lengths.append(lengths)
+            kjt_keys.append(key)
+
+        kjt = KeyedJaggedTensor.from_lengths_sync(
+            keys=kjt_keys,
+            values=torch.cat(kjt_values),
+            lengths=torch.cat(kjt_lengths),
+        )
+
+        #labels = torch.tensor(
+        #    batch.column(self.keys_config["label"]).to_numpy(),
+        #    dtype=torch.float32
+        #)
+
+        labels = torch.from_numpy(batch.column(self.keys_config["label"]).to_numpy()).float()
+
+        return kjt, labels
