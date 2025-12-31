@@ -65,7 +65,7 @@ from embedding_pooling import embedding_pooling
 from pyj_test_utils import create_data_loader, ParquetArrowDataLoader
 from torch.autograd.profiler import record_function
 from einops import rearrange
-from modules.pyj_metric import CustomAUC, CustomCOPC
+from modules.pyj_metric import CustomAUC, CustomCOPC, StreamingAUC
 from dataclasses import dataclass
 from modules.pyj_MLP import MLP
 # from modules.pyj_multi_task_loss_module import MultiTaskLossModule
@@ -908,6 +908,7 @@ def train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metri
         dist.all_reduce(total_has, op=dist.ReduceOp.SUM)
 
         # print(f"rank {local_rank}, total_has: {total_has}")
+        print(f"rank {local_rank} step={step} has_local={has_local} total_has={total_has}")
 
         # 如果所有设备都没有数据了 -> 结束训练
         if total_has.item() == 0:
@@ -940,12 +941,12 @@ def train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metri
         # ---- loss ----
         if has_local:
             current_interval_loss += loss.item()
-            metric_has_data = True
         # ---- metric ----
         # with torch.no_grad():
         #     if has_local:
         #         auc_metric.update(predict_ctr, labels)
         #         copc_metric.update(predict_ctr, labels)
+        #         metric_has_data = True
         # else:
         #     # 忽略fake批次数据的指标更新
         #     ...
@@ -1048,69 +1049,126 @@ def train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metri
 
 
 # TODO: 对齐train one epoch
-def test_one_epoch(model, test_dataloader, epoch, total_epochs):
+def test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epoch, total_epochs):
     model.eval()
     test_loss = 0
     time_spend = 0
+    step = 0
+
+    # ---- metric ----
+    auc_metric.reset()
+    copc_metric.reset()
 
     # 加载当前计算设备的第一个batch数据
-    loader_it = iter(train_loader)
+    loader_it = iter(test_dataloader)
     # 当前计算设备是否有batch数据的状态flag
     has_local = True
 
-    # rese metric
-    model.module.auc_metric.reset()
-    model.module.copc_metric.reset()
-    
+    global placeholder_features, placeholder_labels
+
     with torch.inference_mode():
-        for batch_idx, batch_data in enumerate(test_dataloader):
-            kjt = batch_data['kj_tensor'].to(device)
-            labels = batch_data['labels'].to(device)
+        while True:
+            st = time.time()
 
-            predict_ctr, bce_losses = model(kjt, labels)
-
-            # update metric
-            with torch.no_grad():
-                model.module.auc_metric.update(predict_ctr, labels)
-                model.module.copc_metric.update(predict_ctr, labels)
+            # 尝试获取当前计算设备的batch数据
+            if has_local:
+                batch = next(loader_it)
+                if batch is None:  # dataloader 发出结束信号
+                    has_local = False
+            else:
+                batch = None
             
-            loss = torch.sum(bce_losses, dim=0)
-            test_loss += loss.item()
+            # 汇总每个计算设备的local_has状态 即查看每个rank还有没有数据
+            # local_has == 1 or 0
+            local_has = torch.tensor(int(has_local), device=device, dtype=torch.int64)
+            total_has = local_has.clone()
+            # 在每个计算设备（GPU）上汇总所有计算设备的状态
+            dist.all_reduce(total_has, op=dist.ReduceOp.SUM)
 
-            if (batch_idx + 1) % 500 == 0:
-                 print(f"[Test] Processing step {batch_idx + 1}...")
+            # print(f"rank {local_rank}, total_has: {total_has}")
+            print(f"rank {local_rank} step={step} has_local={has_local} total_has={total_has}")
+
+            # 如果所有设备都没有数据了 -> 结束测试
+            if total_has.item() == 0:
+                break
+
+            # ---- forward ----
+            if has_local:
+                features, labels = batch
+                features = features.to(device, non_blocking=True)
+                labels = labels.to(device, non_blocking=True)
+            else:
+                # 构造占位 batch
+                features, labels = placeholder_features, placeholder_labels
+
+            predict_ctr, logits = model(features)
+
+            # ====== 占位 loss 必须为 0 ======
+            if has_local:
+                bce_losses = loss_fn(logits, labels)
+                loss = torch.sum(bce_losses, dim=0)
+            else:
+                loss = logits.sum() * 0.0    # 安全：必然为 0
+
+            # ---- loss and metrics ----
+            if has_local:
+                test_loss += loss.item()
+                # update metric
+                auc_metric.update(predict_ctr, labels)
+                copc_metric.update(predict_ctr, labels)
+
+
+            if step != 0:
+                tt = time.time() - st
+                #print("Finish One Batch...  Spend (s)", tt)
+                time_spend += tt
+
+            step += 1
+
+        # compute metric when epoch end
+        epoch_auc = auc_metric.compute()
+        epoch_copc = copc_metric.compute()
+        avg_test_loss = test_loss / (step - 1)
+        print(f"==> [Test Summary] Epoch {epoch+1} | Loss: {avg_test_loss:.4f} | AUC: {epoch_auc:.4f} | COPC: {epoch_copc:.4f}")
+
+
+        avg_time_spend = time_spend / (step - 1)
+        print(f"One Batch AVG Spend Time: {avg_time_spend}")
+
+    # # rese metric
+    # model.module.auc_metric.reset()
+    # model.module.copc_metric.reset()
     
-    # compute metric when epoch end
-    epoch_auc = model.module.auc_metric.compute()
-    epoch_copc = model.module.copc_metric.compute()
+    # with torch.inference_mode():
+    #     for batch_idx, batch_data in enumerate(test_dataloader):
+    #         kjt = batch_data['kj_tensor'].to(device)
+    #         labels = batch_data['labels'].to(device)
+
+    #         predict_ctr, bce_losses = model(kjt, labels)
+
+    #         # update metric
+    #         with torch.no_grad():
+    #             model.module.auc_metric.update(predict_ctr, labels)
+    #             model.module.copc_metric.update(predict_ctr, labels)
+            
+    #         loss = torch.sum(bce_losses, dim=0)
+    #         test_loss += loss.item()
+
+    #         if (batch_idx + 1) % 500 == 0:
+    #              print(f"[Test] Processing step {batch_idx + 1}...")
     
-    # avg_test_loss = test_loss / len(test_dataloader)
-    # print(f"Epoch {epoch+1}/{total_epochs}, Test Loss: {avg_test_loss:.4f}")
-    # 防止除以0
-    steps = batch_idx + 1 if batch_idx > 0 else 1
-    avg_test_loss = test_loss / steps
-    print(f"==> [Test Summary] Epoch {epoch+1} | Loss: {avg_test_loss:.4f} | AUC: {epoch_auc:.4f} | COPC: {epoch_copc:.4f}")
+    # # compute metric when epoch end
+    # epoch_auc = model.module.auc_metric.compute()
+    # epoch_copc = model.module.copc_metric.compute()
+    
+    # # avg_test_loss = test_loss / len(test_dataloader)
+    # # print(f"Epoch {epoch+1}/{total_epochs}, Test Loss: {avg_test_loss:.4f}")
+    # # 防止除以0
+    # steps = batch_idx + 1 if batch_idx > 0 else 1
+    # avg_test_loss = test_loss / steps
+    # print(f"==> [Test Summary] Epoch {epoch+1} | Loss: {avg_test_loss:.4f} | AUC: {epoch_auc:.4f} | COPC: {epoch_copc:.4f}")
 
 def train(args):
-    # 创建 train DataLoader
-    # TODO: 规范化这里的 dataloader 后续对齐 example HSTU的实现
-    # train_dataloader, train_sampler, _ = create_data_loader(
-    #     all_slots=args.ALL_SLOTS,
-    #     data_path=args.Train_data_path,
-    #     batch_size=args.batch_size,
-    #     num_workers=4,
-    #     rank=dist.get_rank(),
-    #     world_size=world_size
-    # )
-    # test_dataloader, test_sampler, _ = create_data_loader(
-    #     all_slots=args.ALL_SLOTS,
-    #     data_path=args.Test_data_path,
-    #     batch_size=args.batch_size,
-    #     num_workers=4,
-    #     rank=dist.get_rank(),
-    #     world_size=world_size,
-    #     shuffle=False # 测试集通常不需要 shuffle
-    # )
     keys_config = {}
 
     keys_config["sparse"] = {s: (s + "_len") for s in args.ALL_SLOTS}
@@ -1119,6 +1177,13 @@ def train(args):
     # 创建 dataloader
     train_dataloader = ParquetArrowDataLoader(
     	data_dir=args.Train_data_path,  # "./data_preprocess/parquet_data"
+   		batch_size=args.batch_size,
+    	keys_config=keys_config,
+    	world_size=world_size,
+    	rank=dist.get_rank()
+	)
+    test_dataloader = ParquetArrowDataLoader(
+    	data_dir=args.Test_data_path,
    		batch_size=args.batch_size,
     	keys_config=keys_config,
     	world_size=world_size,
@@ -1143,18 +1208,17 @@ def train(args):
     loss_fn = nn.BCEWithLogitsLoss(reduction="none")
 
     # metrics
-    auc_metric = CustomAUC().to(device)
+    # auc_metric = CustomAUC().to(device)
+    auc_metric = StreamingAUC(num_bins=2048)
     copc_metric = CustomCOPC().to(device)
 
     for epoch in range(args.epochs):
         print("Start Training...")
         st = time.time()
-        # if train_sampler:
-        #     train_sampler.set_epoch(epoch)
         train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metric, copc_metric, epoch, args.epochs)
         print("Finish Training...  Spend (s)", time.time() - st)
-        # TODO: implement test_one_epoch
-        # test_one_epoch(model, test_dataloader, epoch, args.epochs)
+        # TODOing: implement test_one_epoch
+        # test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epoch, args.epochs)
 
 # TODO
 def dump(args):
@@ -1178,7 +1242,6 @@ def main():
     torch.cuda.manual_seed(args.seed)
     np.random.seed(args.seed)
     
-    # 这里是否需要为每张卡配置数据集呢？ 
     dist.barrier(device_ids=[local_rank])# 同步屏障：让所有进程都在这一点等待，知道所有参与训练的进程都到达这个屏障点
     
     # TODO：通过parse_args()传进来其他参数
