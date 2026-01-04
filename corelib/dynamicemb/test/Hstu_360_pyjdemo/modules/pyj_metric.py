@@ -1,8 +1,8 @@
 import torch
 from torchmetrics import AUROC
 from torchmetrics.metric import Metric
-import numpy as np
 
+import numpy as np
 
 class CustomAUC(Metric):
     def __init__(self, task="binary", num_classes=None, **kwargs):
@@ -40,7 +40,6 @@ class CustomCOPC(Metric):
     def reset(self):
         self.total_clicks.zero_()
         self.total_pred_clicks.zero_()
-
 
 class StreamingAUC:
     def __init__(self, num_bins=1000):
@@ -88,3 +87,57 @@ class StreamingAUC:
             return 0.5
 
         return auc / (total_pos * total_neg)
+
+class StreamingCOPC(Metric):
+    def __init__(self, eps: float = 1e-8, **kwargs):
+        super().__init__(**kwargs)
+        self.eps = eps
+
+        self.add_state(
+            "total_clicks",
+            default=torch.tensor(0.0),
+            dist_reduce_fx="sum"
+        )
+        self.add_state(
+            "total_pred_clicks",
+            default=torch.tensor(0.0),
+            dist_reduce_fx="sum"
+        )
+
+    def update(
+        self,
+        preds: torch.Tensor,
+        target: torch.Tensor,
+        valid: torch.Tensor | bool = True
+    ):
+        """
+        valid:
+          - True / False
+          - or shape = [batch_size] 的 mask
+        """
+
+        if not torch.is_tensor(valid):
+            if not valid:
+                return
+            valid = torch.ones_like(target, dtype=torch.bool)
+
+        preds = preds.squeeze()
+        target = target.squeeze()
+
+        valid = valid.to(preds.device)
+
+        preds = preds[valid]
+        target = target[valid]
+
+        if preds.numel() == 0:
+            return
+
+        self.total_clicks += target.sum()
+        self.total_pred_clicks += preds.sum()
+
+    def compute(self):
+        return self.total_clicks / (self.total_pred_clicks + self.eps)
+
+    def reset(self):
+        self.total_clicks.zero_()
+        self.total_pred_clicks.zero_()

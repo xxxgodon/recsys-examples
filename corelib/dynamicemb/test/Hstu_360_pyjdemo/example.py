@@ -65,12 +65,14 @@ from embedding_pooling import embedding_pooling
 from pyj_test_utils import create_data_loader, ParquetArrowDataLoader
 from torch.autograd.profiler import record_function
 from einops import rearrange
-from modules.pyj_metric import CustomAUC, CustomCOPC, StreamingAUC
+from modules.pyj_metric import CustomAUC, CustomCOPC, StreamingAUC, StreamingCOPC
 from dataclasses import dataclass
 from modules.pyj_MLP import MLP
 # from modules.pyj_multi_task_loss_module import MultiTaskLossModule
 from modules.pyj_TransformerBlock import TransformerBlock
 import time
+from datetime import datetime, timedelta
+
 
 # Filter FBGEMM warning, make notebook clean
 warnings.filterwarnings(
@@ -110,6 +112,8 @@ cache_ratio = 0.5  # assume we will use 50% of the HBM for cache
 def parse_args():
     parser = argparse.ArgumentParser(description="TorchRec PCdata with dynamicemb")
     parser.add_argument("--train", action="store_true")
+    parser.add_argument("--train_days", action="store_true")
+    parser.add_argument("--test", action="store_true")
     parser.add_argument("--eval", action="store_true")
     parser.add_argument("--load", action="store_true")
     parser.add_argument("--dump", action="store_true")
@@ -122,13 +126,15 @@ def parse_args():
     parser.add_argument(
         "--Train_data_path",
         type=str,
-        default="./demo.txt",
+        # default="./demo.txt",
+        default="./dataset/parquet_data/demo_train_data",
         help="path to train dataset",
     )
     parser.add_argument(
         "--Test_data_path",
         type=str,
-        default="./demo2.txt",
+        # default="./demo2.txt",
+        default="./dataset/parquet_data/demo_test_data",
         help="path to eval dataset",
     )
 
@@ -191,12 +197,28 @@ def parse_args():
         "--num_embeddings", type=int, default=10000000, help="number of embeddings"
     )
 
-    #parser.add_argument(
-    #    "--save_dir",
-    #    type=str,
-    #    default="./model_checkpoints",
-    #    help="path to save the model",
-    #)
+    # --- Checkpointing and Saving ---
+    parser.add_argument(
+       "--save_dir",
+       type=str,
+       default="./model_checkpoints",
+       help="path to save the model",
+    )
+
+    # --- Training Range ---
+    parser.add_argument(
+        "--date_start",
+        type=str,
+        default="2025-12-21",
+        help="train model start date",
+    )
+    parser.add_argument(
+        "--date_end",
+        type=str,
+        default="2025-12-21",
+        help="train model end date",
+    )
+
     parser.add_argument(
         "--seed", type=int, default=42, help="random seed used for initialization"
     )
@@ -870,6 +892,19 @@ def build_placeholder_batch(keys, batch_size, device):
 
     return kjt, labels
 
+def create_model(args, device):
+    model = TransformerModel(args)
+
+    if local_rank == 0:
+        print(model)
+        for name, param in model.named_parameters():
+            print(f"{name}: {param.shape}")
+
+    model = apply_dmp(model, args, training=True)
+    model.to(device)
+
+    return model
+
 
 def train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metric, copc_metric, epoch, total_epochs, log_interval=100):
     model.train()
@@ -882,10 +917,9 @@ def train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metri
     # 当前计算设备是否有batch数据的状态flag
     has_local = True
 
-    # # # ---- metric ----
-    # # auc_metric.reset()
-    # # copc_metric.reset()
-    # metric_has_data = False  # 标记自上次 reset 以来，有没有至少一次 update
+    # # ---- metric ----
+    auc_metric.reset()
+    copc_metric.reset()
     
     global placeholder_features, placeholder_labels
 
@@ -942,51 +976,37 @@ def train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metri
         if has_local:
             current_interval_loss += loss.item()
         # ---- metric ----
-        # with torch.no_grad():
-        #     if has_local:
-        #         auc_metric.update(predict_ctr, labels)
-        #         copc_metric.update(predict_ctr, labels)
-        #         metric_has_data = True
-        # else:
-        #     # 忽略fake批次数据的指标更新
-        #     ...
+        with torch.no_grad():
+            if has_local:
+                auc_metric.update(predict_ctr, labels)
+                # copc_metric.update(predict_ctr, labels)
+                copc_metric.update(predict_ctr, labels, valid=True)
+                # metric_has_data = True
+            else:
+                # 忽略fake批次数据的指标更新
+                copc_metric.update(predict_ctr, labels, valid=False)
 
         # ---- metric ----
         if (step + 1) % log_interval == 0:
-            # # 同步 metric_has_data 状态
-            # metric_has_data_tensor = torch.tensor(
-            #     int(metric_has_data), 
-            #     device=device, 
-            #     dtype=torch.int64
-            # )
-            # dist.all_reduce(metric_has_data_tensor, op=dist.ReduceOp.MIN)
-            # global_metric_has_data = metric_has_data_tensor.item() == 1
             # 计算全局平均loss
             loss_tensor = torch.tensor(current_interval_loss, device=device)
             dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
             global_avg_loss = loss_tensor.item() / (log_interval * world_size)
-            # # 计算当前的累计指标 (Running Metric)
-            # # 注意：compute() 通常比较耗时(涉及多卡同步)，不要每个 batch 都调
-            # if global_metric_has_data:
-            #     cur_auc = auc_metric.compute()
-            #     cur_copc = copc_metric.compute()
-            # else:
-            #     cur_auc = float("nan")
-            #     cur_copc = float("nan")
+            cur_auc = auc_metric.compute()
+            cur_copc = copc_metric.compute()
 
             if local_rank == 0:
                 print(
                     f"[Train] Epoch {epoch+1}/{total_epochs} | "
                     f"Step {step + 1} | "
                     f"Loss: {global_avg_loss:.4f} | "
-                    # f"AUC: {cur_auc:.4f} | "
-                    # f"COPC: {cur_copc:.4f}"
+                    f"AUC: {cur_auc:.4f} | "
+                    f"COPC: {cur_copc:.4f}"
                 )
             # 所有rank都要重置
             current_interval_loss = 0
-            # auc_metric.reset()
-            # copc_metric.reset()
-            # metric_has_data = False
+            auc_metric.reset()
+            copc_metric.reset()
 
         if step != 0:
             tt = time.time() - st
@@ -997,55 +1017,6 @@ def train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metri
 
     avg_time_spend = time_spend / (step - 1)
     print(f"One Batch AVG Spend Time: {avg_time_spend}")
-
-
-
-    # # TODO：对齐 example HSTU的实现 实现分布式多进程训练
-    # for batch_idx, batch_data in enumerate(train_dataloader):
-    #     # TODO: implement train_pipline with progress() function
-    #     kjt = batch_data['kj_tensor'].to(device)
-    #     labels = batch_data['labels'].to(device)
-        
-    #     predict_ctr, bce_losses = model(kjt, labels)
-
-        # # update metric
-        # with torch.no_grad():
-        #     auc_metric.update(predict_ctr, labels)
-        #     copc_metric.update(predict_ctr, labels)
-        
-        # loss = torch.sum(bce_losses, dim=0)
-        # if model.training:
-        #     # backward
-        #     with record_function("## backward ##"):
-        #         # loss backward
-        #         loss.backward()# 好像是 embedding 对应的sparse optimizer 优化器会在这里自动执行
-        #     # update
-        #     with record_function("## optimizer ##"):
-        #         dense_optimizer.step()
-        #         dense_optimizer.zero_grad()  # 清零梯度
-            
-        # # total_loss += loss.item()
-        # current_interval_loss += loss.item()
-
-        # # [优化] Step 级别打印逻辑
-        # if (batch_idx + 1) % log_interval == 0:
-        #     # 计算当前的累计指标 (Running Metric)
-        #     # 注意：compute() 通常比较耗时(涉及多卡同步)，不要每个 batch 都调
-        #     cur_auc = auc_metric.compute()
-        #     cur_copc = copc_metric.compute()
-        #     avg_loss = current_interval_loss / log_interval
-            
-        #     print(
-        #         f"[Train] Epoch {epoch+1}/{total_epochs} | "
-        #         f"Step {batch_idx + 1} | "
-        #         f"Loss: {avg_loss:.4f} | "
-        #         f"AUC: {cur_auc:.4f} | "
-        #         f"COPC: {cur_copc:.4f}"
-        #     )
-        #     # 重置
-        #     auc_metric.reset()
-        #     copc_metric.reset()
-        #     current_interval_loss = 0
 
 
 # TODO: 对齐train one epoch
@@ -1115,7 +1086,11 @@ def test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epo
                 test_loss += loss.item()
                 # update metric
                 auc_metric.update(predict_ctr, labels)
-                copc_metric.update(predict_ctr, labels)
+                copc_metric.update(predict_ctr, labels, valid=True)
+            else:
+                # 仍然走 forward / 同步流程
+                # 但不更新 COPC
+                copc_metric.update(predict_ctr, labels, valid=False)
 
 
             if step != 0:
@@ -1135,38 +1110,6 @@ def test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epo
         avg_time_spend = time_spend / (step - 1)
         print(f"One Batch AVG Spend Time: {avg_time_spend}")
 
-    # # rese metric
-    # model.module.auc_metric.reset()
-    # model.module.copc_metric.reset()
-    
-    # with torch.inference_mode():
-    #     for batch_idx, batch_data in enumerate(test_dataloader):
-    #         kjt = batch_data['kj_tensor'].to(device)
-    #         labels = batch_data['labels'].to(device)
-
-    #         predict_ctr, bce_losses = model(kjt, labels)
-
-    #         # update metric
-    #         with torch.no_grad():
-    #             model.module.auc_metric.update(predict_ctr, labels)
-    #             model.module.copc_metric.update(predict_ctr, labels)
-            
-    #         loss = torch.sum(bce_losses, dim=0)
-    #         test_loss += loss.item()
-
-    #         if (batch_idx + 1) % 500 == 0:
-    #              print(f"[Test] Processing step {batch_idx + 1}...")
-    
-    # # compute metric when epoch end
-    # epoch_auc = model.module.auc_metric.compute()
-    # epoch_copc = model.module.copc_metric.compute()
-    
-    # # avg_test_loss = test_loss / len(test_dataloader)
-    # # print(f"Epoch {epoch+1}/{total_epochs}, Test Loss: {avg_test_loss:.4f}")
-    # # 防止除以0
-    # steps = batch_idx + 1 if batch_idx > 0 else 1
-    # avg_test_loss = test_loss / steps
-    # print(f"==> [Test Summary] Epoch {epoch+1} | Loss: {avg_test_loss:.4f} | AUC: {epoch_auc:.4f} | COPC: {epoch_copc:.4f}")
 
 def train(args):
     keys_config = {}
@@ -1182,20 +1125,17 @@ def train(args):
     	world_size=world_size,
     	rank=dist.get_rank()
 	)
-    test_dataloader = ParquetArrowDataLoader(
-    	data_dir=args.Test_data_path,
-   		batch_size=args.batch_size,
-    	keys_config=keys_config,
-    	world_size=world_size,
-    	rank=dist.get_rank()
-	)
+    # test_dataloader = ParquetArrowDataLoader(
+    # 	data_dir=args.Test_data_path,
+   	# 	batch_size=args.batch_size,
+    # 	keys_config=keys_config,
+    # 	world_size=world_size,
+    # 	rank=dist.get_rank()
+	# )
 
     # 创建模型
     # TODO：对齐 example HSTU的实现
-    model = TransformerModel(args)
-    # 实现 distributed model parallel
-    model = apply_dmp(model, args, training=True)
-    model.to(device)
+    model = create_model(args, device)
 
     dense_optimizer = Adam(
         model.parameters(), 
@@ -1210,7 +1150,8 @@ def train(args):
     # metrics
     # auc_metric = CustomAUC().to(device)
     auc_metric = StreamingAUC(num_bins=2048)
-    copc_metric = CustomCOPC().to(device)
+    # copc_metric = CustomCOPC().to(device)
+    copc_metric = StreamingCOPC().to(device)
 
     for epoch in range(args.epochs):
         print("Start Training...")
@@ -1219,6 +1160,178 @@ def train(args):
         print("Finish Training...  Spend (s)", time.time() - st)
         # TODOing: implement test_one_epoch
         # test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epoch, args.epochs)
+
+def train_days(args):
+    #循环指定数据集
+    start_date = datetime.strptime(args.date_start, "%Y-%m-%d")
+    end_date   = datetime.strptime(args.date_end, "%Y-%m-%d")
+    last_date = (start_date - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    keys_config = {}
+
+    keys_config["sparse"] = {s: (s + "_len") for s in args.ALL_SLOTS}
+    keys_config["label"] = "label"
+
+
+    model = create_model(args, device)
+
+    dense_optimizer = Adam(
+        model.parameters(), 
+        lr=args.lr_dense,
+        betas=(0.99, 0.9999),
+        eps=1e-8,
+    )
+    
+    # loss function
+    loss_fn = nn.BCEWithLogitsLoss(reduction="none")
+
+    # metrics
+    # auc_metric = CustomAUC().to(device)
+    auc_metric = StreamingAUC(num_bins=2048)
+    # copc_metric = CustomCOPC().to(device)
+    copc_metric = StreamingCOPC().to(device)
+    
+    last_model_path = os.path.join(args.save_dir, last_date, f"model_rank{dist.get_rank()}.pt")
+    last_emb_path = os.path.join(args.save_dir, last_date, "dynamicemb")
+
+    if os.path.exists(last_model_path) and os.path.exists(last_emb_path):
+        #load model
+        checkpoint = torch.load(
+            last_model_path,
+            weights_only=True,
+        )
+        # Must set strict to False, as there is no embedding's weight in model.state_dict()
+        model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+        dense_optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+        # all rank will load from the same files.
+        DynamicEmbLoad(last_emb_path, model, optim=True)
+
+        dist.barrier(device_ids=[local_rank])
+
+
+    cur = start_date
+    while cur <= end_date:
+        cur_str = cur.strftime("%Y-%m-%d") 
+        print(cur_str)
+
+        cur_path = os.path.join(args.save_dir, cur_str)
+
+
+        if dist.get_rank() == 0:
+            if os.path.exists(cur_path):
+                shutil.rmtree(cur_path)
+        
+            os.makedirs(cur_path)
+
+
+        train_dataloader = ParquetArrowDataLoader(
+            # data_dir=f"/dataset/parquet_data/{cur_str}",
+            data_dir=args.Train_data_path,
+            batch_size=args.batch_size,
+            keys_config=keys_config,
+            world_size=world_size,
+            rank=dist.get_rank()
+        )
+        
+
+        for epoch in range(args.epochs):
+            print("Start Training...")
+            st = time.time()
+            train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metric, copc_metric, epoch, args.epochs)
+            print("Finish Training...  Spend (s)", time.time() - st)
+
+        
+        
+        cur_model_path = os.path.join(cur_path, f"model_rank{dist.get_rank()}.pt")
+
+        # ShardedDyanmicEmbeddingCollection.state_dict() will return a dummy tensor.
+        torch.save(
+            {
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": dense_optimizer.state_dict(),
+            },
+            cur_model_path,
+        )
+
+        cur_emb_path = os.path.join(cur_path, "dynamicemb")
+
+        # rank0 will gether embedding from other ranks, so no need to identify rank info.
+        DynamicEmbDump(cur_emb_path, model, optim=True)
+        cur += timedelta(days=1)
+
+def test(args):
+    #循环指定数据集
+    start_date = datetime.strptime(args.date_start, "%Y-%m-%d")
+    end_date   = datetime.strptime(args.date_end, "%Y-%m-%d")
+
+    assert start_date.strftime("%Y-%m-%d") == end_date.strftime("%Y-%m-%d"), "start_date and end_date must be equal when testing.."
+
+    last_date = (start_date - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    keys_config = {}
+
+    keys_config["sparse"] = {s: (s + "_len") for s in args.ALL_SLOTS}
+    keys_config["label"] = "label"
+
+
+    # 创建模型
+    # TODO：对齐 example HSTU的实现
+    model = create_model(args, device)
+
+    dense_optimizer = Adam(
+        model.parameters(), 
+        lr=args.lr_dense,
+        betas=(0.99, 0.9999),
+        eps=1e-8,
+    )
+
+    # loss function
+    loss_fn = nn.BCEWithLogitsLoss(reduction="none")
+
+    # metrics
+    # auc_metric = CustomAUC().to(device)
+    auc_metric = StreamingAUC(num_bins=2048)
+    # copc_metric = CustomCOPC().to(device)
+    copc_metric = StreamingCOPC().to(device)
+
+    last_model_path = os.path.join(args.save_dir, last_date, f"model_rank{dist.get_rank()}.pt")
+    last_emb_path = os.path.join(args.save_dir, last_date, "dynamicemb")
+
+    assert os.path.exists(last_model_path) and os.path.exists(last_emb_path), "Model is not Exist ..."
+    #load model
+    checkpoint = torch.load(
+        last_model_path,
+        weights_only=True,
+    )
+        
+    # Must set strict to False, as there is no embedding's weight in model.state_dict()
+    model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+    dense_optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    
+    # all rank will load from the same files.
+    DynamicEmbLoad(last_emb_path, model, optim=True)
+        
+    dist.barrier(device_ids=[local_rank])
+        
+    # cur = start_date
+    # cur_str = cur.strftime("%Y-%m-%d") 
+    # print(cur_str)       
+    # #cur_path = os.path.join(args.save_dir, cur_str)
+        
+    test_dataloader = ParquetArrowDataLoader(
+        # data_dir=f"/parquet_data/{cur_str}",
+        data_dir=args.Test_data_path,
+        batch_size=args.batch_size,
+        keys_config=keys_config,
+        world_size=world_size,
+        rank=dist.get_rank()
+    )
+
+    print("Start Testing...")
+    st = time.time()
+    test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, 0, 1)
+    print("Finish Testing...  Spend (s)", time.time() - st)
 
 # TODO
 def dump(args):
@@ -1244,8 +1357,8 @@ def main():
     
     dist.barrier(device_ids=[local_rank])# 同步屏障：让所有进程都在这一点等待，知道所有参与训练的进程都到达这个屏障点
     
-    # TODO：通过parse_args()传进来其他参数
-    print("Selected SLOTS:", args.ALL_SLOTS)
+    if local_rank == 0:
+        print("Selected SLOTS:", args.ALL_SLOTS)
 
     global placeholder_features, placeholder_labels
 
@@ -1257,6 +1370,10 @@ def main():
 
     if args.train:
         train(args)
+    if args.train_days:
+        train_days(args)
+    if args.test:
+        test(args)
     if args.dump:
         dump(args)
     if args.load:
