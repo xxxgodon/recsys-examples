@@ -238,7 +238,7 @@ def get_sharder(args, optimizer_type):
     # beta2 = 0.999
     # weight_decay = 0
     # eps = 0.001
-    # TODO: 这里不知道有没有被设置上去，如何验证呢？
+    # 这里不知道有没有被设置上去，如何验证呢? 验证了就是没有设置上去，这里不支持这种优化器参数设置
     initial_g2sum = 0.1
     initial_scale = 1e-3
     show_decay_rate = 0.96
@@ -411,7 +411,6 @@ def apply_dmp(model, args, training):
     """
     eb_configs = model._embedding_module.embedding_configs()
     # optimizer_type = EmbOptimType.ADAM
-    # TODO： rowwise 有什么区别呢？
     # optimizer_type = EmbOptimType.EXACT_ADAGRAD
     optimizer_type = EmbOptimType.EXACT_ROWWISE_ADAGRAD
 
@@ -520,7 +519,7 @@ def get_embedding_module(eb_configs):
     # 注意这里是用的Embedding Collection
     return EmbeddingCollection(
             tables=eb_configs,
-            device=torch.device("meta")  # TODO：cuda/通过args.device参数传入进来
+            device=torch.device("meta")
         )
 
 # TODO：using nvidia recsys-example's JaggedData data structure
@@ -552,20 +551,18 @@ class TransformerModel(nn.Module):
             self.total_candidate_dim,
             self.total_sequence_dim,
             self.token_dim,
-        )# TODO: input transformer config
+        )
         
         # self._hstu_block = HSTUBlock(hstu_config)
-        # TODO: input transformer config
         self._transformer_module = TransformerBlock(
             embedding_dim=self.token_dim,
             num_heads=args.num_attention_heads,
             num_layers=args.num_transformer_layers,
             dropout=args.dropout,
-            ff_dim=args.dim_feedforward,  # TODO: input transformer config
+            ff_dim=args.dim_feedforward,
             max_seq_length=args.max_seq_length,
         )
 
-        # TODO: add MLP layer
         self._output_mlp = MLP(
             # hstu_config.hidden_size,
             # task_config.prediction_head_arch,
@@ -582,7 +579,6 @@ class TransformerModel(nn.Module):
             1
         )
 
-        # # TODO
         # self._loss_module = MultiTaskLossModule(
         #     # num_classes=task_config.prediction_head_arch[-1],
         #     # num_tasks=task_config.num_tasks,
@@ -590,7 +586,6 @@ class TransformerModel(nn.Module):
         #     num_tasks = 1,
         #     reduction="none",
         # )
-        # TODO
         # self._metric_module = get_multi_event_metric_module(
         #     num_classes=task_config.prediction_head_arch[-1],
         #     num_tasks=task_config.num_tasks,
@@ -773,7 +768,6 @@ class preprocessor(nn.Module):
                 pooled_embeddings[key] = embeddings[key]
         
         # 处理成为transformer需要的输入token序列
-        # TODO: 结构化输入参数
         # 注意：现在是采样了第一个seq slot作为样例来提取lengths&&offsets 稍微验证了一下这里不同slot的length&&offsets 结果是一样的
         item_jt = pooled_embeddings[self._SEQ_SLOTS[0]]
         # sequence_embeddings = item_jt.values()  # shape: (total_items, embedding_dim)
