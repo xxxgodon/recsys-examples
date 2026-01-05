@@ -170,7 +170,7 @@ def parse_args():
     parser.add_argument("--token_dim", type=int, default=64, help="Dimension of token embeddings")
     parser.add_argument("--num_attention_heads", type=int, default=2, help="Number of attention heads in Transformer")
     parser.add_argument("--num_transformer_layers", type=int, default=2, help="Number of Transformer layers")
-    parser.add_argument("--dim_feedforward", type=int, default=32, help="Dimension of the feedforward network in Transformer")
+    parser.add_argument("--dim_feedforward", type=int, default=64, help="Dimension of the feedforward network in Transformer")
     parser.add_argument("--dropout", type=float, default=0.1, help="Dropout rate")
     parser.add_argument("--max_seq_length", type=int, default=512, help="Maximum sequence length for user history")
     # parser.add_argument("--activation", type=str, default="relu", help="Activation function (relu, gelu, etc.)")
@@ -924,7 +924,7 @@ def create_model(args, device):
     return model
 
 
-def train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metric, copc_metric, epoch, total_epochs, log_interval=100):
+def train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metric, copc_metric, epoch, total_epochs, log_interval=10000):
     model.train()
     current_interval_loss = 0 # 用于计算最近 N 个 batch 的平均 loss
     time_spend = 0
