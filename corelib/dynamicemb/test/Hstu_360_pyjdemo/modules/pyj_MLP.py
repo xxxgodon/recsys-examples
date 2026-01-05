@@ -13,6 +13,7 @@ class MLP(nn.Module):
         activation (str): Activation function name ('relu', 'gelu', 'tanh', 'sigmoid')
         bias (bool): Whether to use bias in linear layers
         dropout (float): Dropout probability (0 means no dropout)
+        last_activation: weather or not using activation in the last layer
         device (Optional[torch.device]): Device to place the model
         dtype (torch.dtype): Data type for parameters
     
@@ -29,6 +30,7 @@ class MLP(nn.Module):
         activation: str = "relu",
         bias: bool = True,
         dropout: float = 0.0,
+        last_activation: bool = False,
         device: Optional[torch.device] = None,
         dtype: torch.dtype = torch.float32,
     ) -> None:
@@ -68,8 +70,11 @@ class MLP(nn.Module):
                 )
             )
             
-            # 最后一层不加激活函数和dropout
-            if i < len(layer_sizes) - 1:
+            # 判断是否是最后一层
+            is_last_layer = (i == len(layer_sizes) - 1)
+            
+            # 中间层总是加激活，最后一层根据参数决定
+            if not is_last_layer or last_activation:
                 layers.append(activation_fn())
                 if dropout > 0:
                     layers.append(nn.Dropout(p=dropout))

@@ -150,7 +150,7 @@ def parse_args():
         "--POOLING_SLOTS",
         type=List[int],
         # default=['0', '73'],
-        default=['0', '12', '13', '14', '15', '2', '20', '92', '320', '501', '502', '503', '504', '505', '506', '507', '508', '509', '510', '511', '513', '514', '515', '516', '517', '518', '520', '521', '522', '523', '524', '525', '527', '528', '529', '532', '533', '534', '535', '536', '537', '538', '540', '541', '547', '548', '560', '561', '562', '66', '67', '68', '69', '70', '73', '74', '77', '78', '800', '801', '802', '803', '814', '815', '816', '817', '818', '819', '825', '826', '1041', '1044', '1047', '1059', '1062', '912', '914', '917', '921', '927', '929', '935', '938', '939', '940', '942', '951', '961', '967', '971', '1100', '1109', '1110', '1501', '1810', '1506', '1800', '1801', '1802', '1803', '1804', '1805', '1806', '1807', '100', '101', '102', '103', '104', '105', '106', '109', '110', '111', '112', '113', '114', '115', '116', '118', '119', '120', '121', '126', '127', '19'],
+        default=['0', '12', '13', '14', '15', '2', '20', '92', '320', '501', '502', '503', '504', '505', '506', '507', '508', '509', '510', '511', '513', '514', '515', '516', '517', '518', '520', '521', '522', '523', '524', '525', '527', '528', '529', '532', '533', '534', '535', '536', '537', '538', '540', '541', '547', '548', '560', '561', '562', '66', '67', '68', '69', '70', '73', '74', '77', '78', '800', '801', '802', '803', '814', '815', '816', '817', '818', '819', '825', '826', '1041', '1044', '1047', '1059', '1062', '912', '914', '917', '921', '927', '929', '935', '938', '939', '940', '942', '951', '961', '967', '971', '1100', '1109', '1110', '1501', '1810', '1506', '1800', '1801', '1802', '1803', '1804', '1805', '1806', '1807', '100', '101', '102', '103', '104', '105', '106', '109', '110', '111', '112', '113', '114', '115', '116', '118', '119', '120', '121', '126', '127'],
         help="slots requiring pooling",
     )
     parser.add_argument(
@@ -159,8 +159,15 @@ def parse_args():
         default=['1811', '1812', '1813', '1814', '1815', '1816', '1817', '1818', '1819'],
         help="sequence input slots",
     )
+    parser.add_argument(
+        "--POS_SLOT",
+        type=str,
+        default='19',
+        help="position slot key",
+    )
 
     # --- Transformer / HSTU Architecture ---
+    parser.add_argument("--token_dim", type=int, default=64, help="Dimension of token embeddings")
     parser.add_argument("--num_attention_heads", type=int, default=2, help="Number of attention heads in Transformer")
     parser.add_argument("--num_transformer_layers", type=int, default=2, help="Number of Transformer layers")
     parser.add_argument("--dim_feedforward", type=int, default=32, help="Dimension of the feedforward network in Transformer")
@@ -176,7 +183,7 @@ def parse_args():
     parser.add_argument(
         "--output_mlp_dims",
         type=List[int],
-        default=[256, 128, 1],
+        default=[256, 128],
         help="dimension of output MLP layer, with type List[int]",
     )
 
@@ -191,7 +198,7 @@ def parse_args():
     
     # --- DynamicEmb Specifics ---
     parser.add_argument(
-        "--embedding_dim", type=int, default=64, help="embedding dimension"
+        "--embedding_dim", type=int, default=8, help="embedding dimension"
     )
     parser.add_argument(
         "--num_embeddings", type=int, default=10000000, help="number of embeddings"
@@ -530,7 +537,8 @@ class TransformerModel(nn.Module):
         # 参数配置部分
         self._POOLING_SLOTS = args.POOLING_SLOTS
         self._SEQ_SLOTS = args.SEQ_SLOTS
-        self.token_dim = args.embedding_dim
+        self.POS_SLOT = args.POS_SLOT
+        self.token_dim = args.token_dim
         
         self.embedding_configs = get_embedding_configs(args)
         self._embedding_module = get_embedding_module(self.embedding_configs)
@@ -558,14 +566,22 @@ class TransformerModel(nn.Module):
         )
 
         # TODO: add MLP layer
-        self._mlp = MLP(
+        self._output_mlp = MLP(
             # hstu_config.hidden_size,
             # task_config.prediction_head_arch,
             # task_config.prediction_head_act_type,
             # task_config.prediction_head_bias,
             in_size = self.token_dim,
             layer_sizes = args.output_mlp_dims,
+            last_activation = True,
         )
+
+        # 最后输出1维
+        self._linear = nn.Linear(
+            args.output_mlp_dims[-1] + args.embedding_dim,  # 拼接POS_SLOT的embedding
+            1
+        )
+
         # # TODO
         # self._loss_module = MultiTaskLossModule(
         #     # num_classes=task_config.prediction_head_arch[-1],
@@ -614,12 +630,20 @@ class TransformerModel(nn.Module):
             src_key_padding_mask=~padding_mask, # 注意：这里需要取反 这里True位置的元素会被mask掉
         )
 
-        candidate_token_output = output_tokens[:, -1, :]  # [B, dim]
+        candidate_token_output = output_tokens[:, -1, :]  # [B, token_dim]
         # # L2 归一化  # TODO： 后续增加多种loss的话 这里的L2归一化可以放到loss function中
         # candidate_token_output = candidate_token_output / torch.linalg.norm(candidate_token_output, ord=2, dim=-1, keepdim=True).clamp(min=1e-6)
         
-        # TODO: MLP && Loss functions etc
-        logits = self._mlp(candidate_token_output)
+        # 输出MLP部分
+        logits = self._output_mlp(candidate_token_output)  # [B, mlp_out_dim]
+
+        # 拼接POS_SLOT的embedding
+        pos_slot_embedding = embeddings[self.POS_SLOT].values()  # [B, emb_dim]
+        # print("[Debugging] pos_slot_embedding.shape:", pos_slot_embedding.shape)
+        logits = torch.concat([logits, pos_slot_embedding], dim=-1)  # [B, mlp_out_dim + emb_dim]
+
+        # 过最后一层线性层变成1维输出
+        logits = self._linear(logits)  # [B, 1]
 
         predict_ctr = torch.sigmoid(logits)
 
@@ -649,8 +673,7 @@ class TransformerModel(nn.Module):
         # 计算候选特征的总维度
         total_candidate_dim = sum(
             slot_to_dim[slot] 
-            for slot in slot_to_dim.keys() 
-            if slot not in self._SEQ_SLOTS
+            for slot in self._POOLING_SLOTS
         )
 
         total_sequence_dim = sum(
@@ -678,12 +701,12 @@ class preprocessor(nn.Module):
         self._SEQ_SLOTS = _SEQ_SLOTS
         self._sequence_mlp = SlotMLP(
             input_dim=total_sequence_dim,
-            hidden_dim=256,
+            # hidden_dim=512,
             output_dim=token_dim
         )
         self._candidate_mlp = SlotMLP(
             input_dim=total_candidate_features_dim,
-            hidden_dim=256,
+            # hidden_dim=512,
             output_dim=token_dim
         )
     
@@ -857,14 +880,15 @@ class preprocessor(nn.Module):
         return  input_tokens, padding_mask
 
 # TODO: 封装函数
-# TODO：使用 module 中的 MLP 替换这个
 class SlotMLP(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim):
+    def __init__(self, input_dim, output_dim):
         super().__init__()
         self.mlp = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
+            nn.Linear(input_dim, 512),
             nn.ReLU(),
-            nn.Linear(hidden_dim, output_dim)
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, output_dim),
         )
     
     def forward(self, x):
@@ -941,8 +965,7 @@ def train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metri
         # 在每个计算设备（GPU）上汇总所有计算设备的状态
         dist.all_reduce(total_has, op=dist.ReduceOp.SUM)
 
-        # print(f"rank {local_rank}, total_has: {total_has}")
-        print(f"rank {local_rank} step={step} has_local={has_local} total_has={total_has}")
+        # print(f"rank {local_rank} step={step} has_local={has_local} total_has={total_has}")
 
         # 如果所有设备都没有数据了 -> 结束训练
         if total_has.item() == 0:
@@ -964,9 +987,7 @@ def train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metri
             bce_losses = loss_fn(logits, labels)
             loss = torch.sum(bce_losses, dim=0)
         else:
-            # TODO：检查一下维度
             loss = logits.sum() * 0.0    # 安全：必然为 0
-            # print(loss)
 
         loss.backward()
         dense_optimizer.step()
