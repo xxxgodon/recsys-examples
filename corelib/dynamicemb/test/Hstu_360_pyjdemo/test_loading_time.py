@@ -971,41 +971,41 @@ def train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metri
         if total_has.item() == 0:
             break
 
-        # ---- forward / backward ----
-        if has_local:
-            features, labels = batch
-            features = features.to(device, non_blocking=True)
-            labels = labels.to(device, non_blocking=True)
-        else:
-            # 构造占位 batch
-            features, labels = placeholder_features, placeholder_labels
+        # # ---- forward / backward ----
+        # if has_local:
+        #     features, labels = batch
+        #     features = features.to(device, non_blocking=True)
+        #     labels = labels.to(device, non_blocking=True)
+        # else:
+        #     # 构造占位 batch
+        #     features, labels = placeholder_features, placeholder_labels
 
-        predict_ctr, logits = model(features)
+        # predict_ctr, logits = model(features)
 
-        # ====== 占位 loss 必须为 0 ======
-        if has_local:
-            bce_losses = loss_fn(logits, labels)
-            loss = torch.sum(bce_losses, dim=0)
-        else:
-            loss = logits.sum() * 0.0    # 安全：必然为 0
+        # # ====== 占位 loss 必须为 0 ======
+        # if has_local:
+        #     bce_losses = loss_fn(logits, labels)
+        #     loss = torch.sum(bce_losses, dim=0)
+        # else:
+        #     loss = logits.sum() * 0.0    # 安全：必然为 0
 
-        loss.backward()
-        dense_optimizer.step()
-        dense_optimizer.zero_grad(set_to_none=True)
+        # loss.backward()
+        # dense_optimizer.step()
+        # dense_optimizer.zero_grad(set_to_none=True)
         
-        # ---- loss ----
-        if has_local:
-            current_interval_loss += loss.item()
-        # ---- metric ----
-        with torch.no_grad():
-            if has_local:
-                auc_metric.update(predict_ctr, labels)
-                # copc_metric.update(predict_ctr, labels)
-                copc_metric.update(predict_ctr, labels, valid=True)
-                # metric_has_data = True
-            else:
-                # 忽略fake批次数据的指标更新
-                copc_metric.update(predict_ctr, labels, valid=False)
+        # # ---- loss ----
+        # if has_local:
+        #     current_interval_loss += loss.item()
+        # # ---- metric ----
+        # with torch.no_grad():
+        #     if has_local:
+        #         auc_metric.update(predict_ctr, labels)
+        #         # copc_metric.update(predict_ctr, labels)
+        #         copc_metric.update(predict_ctr, labels, valid=True)
+        #         # metric_has_data = True
+        #     else:
+        #         # 忽略fake批次数据的指标更新
+        #         copc_metric.update(predict_ctr, labels, valid=False)
 
         # ---- metric ----
         if (step + 1) % log_interval == 0:
@@ -1048,8 +1048,8 @@ def test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epo
     time_spend = 0
     step = 0
 
-    # 将可迭代对象（test_dataloader）转换为迭代器 后续可以通过next()手动获取数据 注意这里可以预获取下下个batch的数据
-    loader_it = iter(test_dataloader)
+    # 将可迭代对象（train_dataloader）转换为迭代器 后续可以通过next()手动获取数据 注意这里可以预获取下下个batch的数据
+    loader_it = iter(train_dataloader)
     # 当前计算设备是否有batch数据的状态flag
     has_local = True
 

@@ -18,6 +18,51 @@ class CustomAUC(Metric):
     def reset(self):
         self.auroc.reset()
 
+class MaskedAUC(Metric):
+    def __init__(self, task="binary", num_classes=None, **kwargs):
+        super().__init__(**kwargs)
+        self.auroc = AUROC(
+            task=task,
+            num_classes=num_classes,
+            **kwargs
+        )
+
+    def update(
+        self,
+        preds: torch.Tensor,
+        target: torch.Tensor,
+        valid: bool | torch.Tensor = True
+    ):
+        """
+        valid:
+          - bool: 当前 batch 是否真实
+          - Tensor[batch]: 样本级 mask
+        """
+
+        if not torch.is_tensor(valid):
+            if not valid:
+                return
+            valid = torch.ones_like(target, dtype=torch.bool)
+
+        preds = preds.squeeze()
+        target = target.squeeze()
+
+        valid = valid.to(preds.device)
+
+        preds = preds[valid]
+        target = target[valid]
+
+        if preds.numel() == 0:
+            return
+
+        self.auroc.update(preds, target)
+
+    def compute(self):
+        return self.auroc.compute()
+
+    def reset(self):
+        self.auroc.reset()
+
 class CustomCOPC(Metric):
     def __init__(self, eps: float = 1e-8, **kwargs):
         super().__init__(**kwargs)
