@@ -474,7 +474,6 @@ def apply_dmp(model, args, training):
     )
     return dmp
 
-# TODO: optimize function
 @dataclass
 class SlotEmbeddingConfig:
     """SLOT embedding config datatype"""
@@ -484,6 +483,7 @@ class SlotEmbeddingConfig:
 
 # TODO: 这里的配置移动到其他位置 通过args导入进来
 def get_embedding_configs(args):
+    """
     # # 定义每个slot的配置 但是现在使用embedding collection的话嵌入维度要求必须一致
     # UNIFIED_EMBEDDING_DIM = args.embedding_dim
     # slot_configs = [
@@ -512,6 +512,7 @@ def get_embedding_configs(args):
     #         feature_names=[config.slot_name],
     #         data_type=DataType.FP32,
     #     ))
+    """
     
     # return eb_configs
     eb_config = EmbeddingConfig(
@@ -747,36 +748,13 @@ class preprocessor(nn.Module):
         self,
         embeddings: Dict[str, JaggedTensor],
     ):
-        # embedding pooling
-        # embed_list = [embedding_pooling(embeddings[key].values(), embeddings[key].offsets(), "mean") if key in self._POOLING_SLOTS else embeddings[key].values() for key in embeddings.keys()]
-        # 保持原本的jagged tensor格式 && 使用dict格式
-        pooled_embeddings = {}
-        for key in embeddings.keys():
-            if key in self._POOLING_SLOTS:
-                # pooling后包装成JaggedTensor
-                pooled_values = embedding_pooling(
-                    embeddings[key].values(), 
-                    embeddings[key].offsets(), 
-                    "mean"
-                )
-                # 创建新的JaggedTensor，lengths变为全1（每个样本一个embedding）
-                pooled_embeddings[key] = JaggedTensor(
-                    values=pooled_values,
-                    lengths=torch.ones(self.batch_size, dtype=torch.int32, device=pooled_values.device),
-                    offsets=torch.arange(self.batch_size + 1, dtype=torch.int32, device=pooled_values.device)
-                )
-            else:
-                # 保持原JaggedTensor
-                pooled_embeddings[key] = embeddings[key]
-        
         # ---- sequence ----
-        # 采样第一个 seq slot 作为样例提取到 lengths&&offsets
-        base_jt = pooled_embeddings[self._SEQ_SLOTS[0]]  # JaggedTensor
+        base_jt = embeddings[self._SEQ_SLOTS[0]]  # JaggedTensor
         sequence_embeddings_lengths = base_jt.lengths()
         sequence_embeddings_offsets = base_jt.offsets()
         max_seq_len = int(base_jt.lengths().max().item())
 
-        sequence_jts = [pooled_embeddings[key] for key in pooled_embeddings.keys() if key in self._SEQ_SLOTS]  # list[jt0, jt1, ...]
+        sequence_jts = [embeddings[key] for key in embeddings.keys() if key in self._SEQ_SLOTS]  # list[jt0, jt1, ...]
         sequence_jts_values = [jt.values() for jt in sequence_jts]                # list: [seq_slot_num: 9, tensor([batch_total_items, embedding_dim])]
         concatenated_sequence_features = torch.cat(sequence_jts_values, dim=-1)   # [batch_total_items, seq_slot_num * embedding_dim]
         sequence_embeddings = self._sequence_mlp(concatenated_sequence_features)  # [batch_total_items, token_dim]
@@ -790,16 +768,13 @@ class preprocessor(nn.Module):
         )  # [B, L, token_dim]
 
         # ---- candidate ----
-        candidate_jts = [pooled_embeddings[key] for key in pooled_embeddings.keys() if key in self._POOLING_SLOTS]  # list[jt0, jt1, ...]
-        candidate_jts_values = [jt.values() for jt in candidate_jts]               # list:[candidate_slot_num, tensor([batch_size, embedding_dim])]
-        concatenated_candidate_features = torch.cat(candidate_jts_values, dim=-1)  # [batch_size, candidate_slot_num * embedding_dim]
+        pooled_candidate_values = [embedding_pooling(embeddings[key].values(), embeddings[key].offsets(), "mean") for key in self._POOLING_SLOTS]  # list:[candidate_slot_num, tensor([batch_size, embedding_dim])]
+        concatenated_candidate_features = torch.cat(pooled_candidate_values, dim=-1)  # [batch_size, candidate_slot_num * embedding_dim]
 
-        # MLP
-        candidate_tokens = self._candidate_mlp(concatenated_candidate_features)  # [batch_size, token_dim]
-        candidate_tokens = rearrange(candidate_tokens, 'b d -> b 1 d')           # [batch_size, 1, token_dim]
+        candidate_tokens = self._candidate_mlp(concatenated_candidate_features)       # [batch_size, token_dim]
+        candidate_tokens = candidate_tokens.unsqueeze(1)                              # [batch_size, 1, token_dim]
 
-        # concate seq&&candidate
-        input_tokens = torch.cat([sequences_tokens, candidate_tokens], dim=1)    # [batch_size, L+1, token_dim]
+        input_tokens = torch.cat([sequences_tokens, candidate_tokens], dim=1)         # [batch_size, L+1, token_dim]
 
         # ---- padding mask ----
         padding_mask = torch.arange(  # [batch_size, L]
@@ -816,6 +791,75 @@ class preprocessor(nn.Module):
         return  input_tokens, padding_mask
 
         """
+        # # embedding pooling
+        # # embed_list = [embedding_pooling(embeddings[key].values(), embeddings[key].offsets(), "mean") if key in self._POOLING_SLOTS else embeddings[key].values() for key in embeddings.keys()]
+        # # 保持原本的jagged tensor格式 && 使用dict格式
+        # pooled_embeddings = {}
+        # for key in embeddings.keys():
+        #     if key in self._POOLING_SLOTS:
+        #         # pooling后包装成JaggedTensor
+        #         pooled_values = embedding_pooling(
+        #             embeddings[key].values(), 
+        #             embeddings[key].offsets(), 
+        #             "mean"
+        #         )
+        #         # 创建新的JaggedTensor，lengths变为全1（每个样本一个embedding）
+        #         pooled_embeddings[key] = JaggedTensor(
+        #             values=pooled_values,
+        #             lengths=torch.ones(self.batch_size, dtype=torch.int32, device=pooled_values.device),
+        #             offsets=torch.arange(self.batch_size + 1, dtype=torch.int32, device=pooled_values.device)
+        #         )
+        #     else:
+        #         # 保持原JaggedTensor
+        #         pooled_embeddings[key] = embeddings[key]
+        
+        # # ---- sequence ----
+        # # 采样第一个 seq slot 作为样例提取到 lengths&&offsets
+        # base_jt = pooled_embeddings[self._SEQ_SLOTS[0]]  # JaggedTensor
+        # sequence_embeddings_lengths = base_jt.lengths()
+        # sequence_embeddings_offsets = base_jt.offsets()
+        # max_seq_len = int(base_jt.lengths().max().item())
+
+        # sequence_jts = [pooled_embeddings[key] for key in pooled_embeddings.keys() if key in self._SEQ_SLOTS]  # list[jt0, jt1, ...]
+        # sequence_jts_values = [jt.values() for jt in sequence_jts]                # list: [seq_slot_num: 9, tensor([batch_total_items, embedding_dim])]
+        # concatenated_sequence_features = torch.cat(sequence_jts_values, dim=-1)   # [batch_total_items, seq_slot_num * embedding_dim]
+        # sequence_embeddings = self._sequence_mlp(concatenated_sequence_features)  # [batch_total_items, token_dim]
+        
+        # # padding
+        # sequences_tokens = torch.ops.fbgemm.jagged_to_padded_dense(
+        #     sequence_embeddings,            # [batch_total_items, token_dim]
+        #     [sequence_embeddings_offsets],  # list of offsets
+        #     [max_seq_len],                  # max length
+        #     0.0                             # padding value
+        # )  # [B, L, token_dim]
+
+        # # ---- candidate ----
+        # candidate_jts = [pooled_embeddings[key] for key in pooled_embeddings.keys() if key in self._POOLING_SLOTS]  # list[jt0, jt1, ...]
+        # candidate_jts_values = [jt.values() for jt in candidate_jts]               # list:[candidate_slot_num, tensor([batch_size, embedding_dim])]
+        # concatenated_candidate_features = torch.cat(candidate_jts_values, dim=-1)  # [batch_size, candidate_slot_num * embedding_dim]
+
+        # # MLP
+        # candidate_tokens = self._candidate_mlp(concatenated_candidate_features)  # [batch_size, token_dim]
+        # candidate_tokens = rearrange(candidate_tokens, 'b d -> b 1 d')           # [batch_size, 1, token_dim]
+
+        # # concate seq&&candidate
+        # input_tokens = torch.cat([sequences_tokens, candidate_tokens], dim=1)    # [batch_size, L+1, token_dim]
+
+        # # ---- padding mask ----
+        # padding_mask = torch.arange(  # [batch_size, L]
+        #     max_seq_len, 
+        #     device=sequences_tokens.device
+        # )[None, :] < sequence_embeddings_lengths[:, None]
+        # candidate_mask = torch.ones(  # [batch_size, 1]
+        #     self.batch_size, 1, 
+        #     dtype=torch.bool, 
+        #     device=input_tokens.device
+        # )
+        # padding_mask = torch.cat([padding_mask, candidate_mask], dim=1)  # [batch_size, L+1]
+
+        # return  input_tokens, padding_mask
+
+
         # TODO: add other kwargs
         # sequence_max_seqlen = batch.feature_to_max_seqlen[batch.item_feature_name]
         # TODO: 1. add other tokens 2. 划分不同类别的特征来实现，比如说可以分为seqs actions context
