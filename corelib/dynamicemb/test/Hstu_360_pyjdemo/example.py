@@ -72,6 +72,7 @@ from modules.pyj_MLP import MLP
 from modules.pyj_TransformerBlock import TransformerBlock
 import time
 from datetime import datetime, timedelta
+import torch.profiler as prof
 
 
 # Filter FBGEMM warning, make notebook clean
@@ -225,6 +226,16 @@ def parse_args():
         default="2025-12-21",
         help="train model end date",
     )
+
+    # --- Debug / Profiling ---
+    parser.add_argument("--profile", action="store_true", help="enable torch.profiler (rank0 only)")
+    parser.add_argument("--profile_dir", type=str, default="./tb_prof", help="tensorboard log dir for profiler traces")
+    parser.add_argument("--profile_wait", type=int, default=5)
+    parser.add_argument("--profile_warmup", type=int, default=5)
+    parser.add_argument("--profile_active", type=int, default=50)
+
+    # --- AMP ---
+    parser.add_argument("--amp", action="store_true", help="enable AMP (autocast + GradScaler)")
 
     parser.add_argument(
         "--seed", type=int, default=42, help="random seed used for initialization"
@@ -533,7 +544,6 @@ class TransformerModel(nn.Module):
         # task_config: RankingConfig,
     ):
         super().__init__()
-        # 参数配置部分
         self._POOLING_SLOTS = args.POOLING_SLOTS
         self._SEQ_SLOTS = args.SEQ_SLOTS
         self.POS_SLOT = args.POS_SLOT
@@ -544,8 +554,8 @@ class TransformerModel(nn.Module):
         
         _, self.total_candidate_dim, self.total_sequence_dim = self._initialize_embedding_dimensions()
 
-        # TODO: 配置 max_seq_len 参数
         self._preprocess = preprocessor(
+            args.batch_size,
             self._POOLING_SLOTS, 
             self._SEQ_SLOTS,
             self.total_candidate_dim,
@@ -553,7 +563,6 @@ class TransformerModel(nn.Module):
             self.token_dim,
         )
         
-        # self._hstu_block = HSTUBlock(hstu_config)
         self._transformer_module = TransformerBlock(
             embedding_dim=self.token_dim,
             num_heads=args.num_attention_heads,
@@ -564,10 +573,6 @@ class TransformerModel(nn.Module):
         )
 
         self._output_mlp = MLP(
-            # hstu_config.hidden_size,
-            # task_config.prediction_head_arch,
-            # task_config.prediction_head_act_type,
-            # task_config.prediction_head_bias,
             in_size = self.token_dim,
             layer_sizes = args.output_mlp_dims,
             last_activation = True,
@@ -579,6 +584,7 @@ class TransformerModel(nn.Module):
             1
         )
 
+        """
         # self._loss_module = MultiTaskLossModule(
         #     # num_classes=task_config.prediction_head_arch[-1],
         #     # num_tasks=task_config.num_tasks,
@@ -596,7 +602,7 @@ class TransformerModel(nn.Module):
         # 解耦到外部
         # self.auc_metric = CustomAUC()
         # self.copc_metric = CustomCOPC()
-        
+        """
 
     def forward(
         self, 
@@ -605,39 +611,34 @@ class TransformerModel(nn.Module):
         ) -> torch.Tensor:
 
         # embedding lookup
-        # TODO: 把这里的lookup代码简化成单句的 wait封装到self._embedding_module函数里边
         embeddings_awaitable: EmbeddingCollectionAwaitable = self._embedding_module(kjt)
         embeddings: Dict[str, JaggedTensor] = embeddings_awaitable.wait()
 
         input_tokens, padding_mask = self._preprocess(embeddings)
 
-        # 设置causal mask
-        seq_len = input_tokens.shape[1]  # L+1
+        # causal mask
+        seq_len = input_tokens.shape[1]             # L+1
         causal_mask = torch.triu(
             torch.ones(seq_len, seq_len, device=input_tokens.device), 
             diagonal=1
-        ).bool()  # 形状: [L+1, L+1]
+        ).bool()                                    # [L+1, L+1]
         
         # transformer block
-        output_tokens = self._transformer_module(
+        output_tokens = self._transformer_module(   # [B, L+1, token_dim]
             input_tokens, 
             mask=causal_mask,
             src_key_padding_mask=~padding_mask, # 注意：这里需要取反 这里True位置的元素会被mask掉
         )
 
-        candidate_token_output = output_tokens[:, -1, :]  # [B, token_dim]
-        # # L2 归一化  # TODO： 后续增加多种loss的话 这里的L2归一化可以放到loss function中
-        # candidate_token_output = candidate_token_output / torch.linalg.norm(candidate_token_output, ord=2, dim=-1, keepdim=True).clamp(min=1e-6)
-        
-        # 输出MLP部分
-        logits = self._output_mlp(candidate_token_output)  # [B, mlp_out_dim]
+        candidate_token_output = output_tokens[:, -1, :]    # [B, token_dim]
+        logits = self._output_mlp(candidate_token_output)   # [B, mlp_out_dim]
 
-        # 拼接POS_SLOT的embedding
-        pos_slot_embedding = embeddings[self.POS_SLOT].values()  # [B, emb_dim]
+        # concate POS_SLOT embedding
+        pos_slot_embedding = embeddings[self.POS_SLOT].values()  # [B, embedding_dim]
         # print("[Debugging] pos_slot_embedding.shape:", pos_slot_embedding.shape)
-        logits = torch.concat([logits, pos_slot_embedding], dim=-1)  # [B, mlp_out_dim + emb_dim]
+        logits = torch.concat([logits, pos_slot_embedding], dim=-1)  # [B, mlp_out_dim + embedding_dim]
 
-        # 过最后一层线性层变成1维输出
+        # liner layer to scaler
         logits = self._linear(logits)  # [B, 1]
 
         predict_ctr = torch.sigmoid(logits)
@@ -678,12 +679,13 @@ class TransformerModel(nn.Module):
         
         return slot_to_dim, total_candidate_dim, total_sequence_dim
 
-# TODO：封装成独立的函数文件
+
 class preprocessor(nn.Module):
     def __init__(
         self,
+        batch_size,
         POOLING_SLOTS,
-        _SEQ_SLOTS,
+        SEQ_SLOTS,
         total_candidate_features_dim,
         total_sequence_dim,
         token_dim,
@@ -692,19 +694,19 @@ class preprocessor(nn.Module):
     ):
         super().__init__()
 
+        self.batch_size = batch_size
         self._POOLING_SLOTS = POOLING_SLOTS
-        self._SEQ_SLOTS = _SEQ_SLOTS
+        self._SEQ_SLOTS = SEQ_SLOTS
         self._sequence_mlp = SlotMLP(
             input_dim=total_sequence_dim,
-            # hidden_dim=512,
             output_dim=token_dim
         )
         self._candidate_mlp = SlotMLP(
             input_dim=total_candidate_features_dim,
-            # hidden_dim=512,
             output_dim=token_dim
         )
     
+        """
         # TODO: add MLP layer
         # self._item_mlp = None
         # self._contextual_mlp = None
@@ -738,6 +740,7 @@ class preprocessor(nn.Module):
         #     )
 
         # TODO: 考虑其他的参数&&配置
+        """
 
     # TODO: using nvidia recsys-example's JaggedData data structure
     def forward(
@@ -746,7 +749,7 @@ class preprocessor(nn.Module):
     ):
         # embedding pooling
         # embed_list = [embedding_pooling(embeddings[key].values(), embeddings[key].offsets(), "mean") if key in self._POOLING_SLOTS else embeddings[key].values() for key in embeddings.keys()]
-        # 保持原本的jagged tensor格式 && 使用原来的dict格式
+        # 保持原本的jagged tensor格式 && 使用dict格式
         pooled_embeddings = {}
         for key in embeddings.keys():
             if key in self._POOLING_SLOTS:
@@ -757,121 +760,101 @@ class preprocessor(nn.Module):
                     "mean"
                 )
                 # 创建新的JaggedTensor，lengths变为全1（每个样本一个embedding）
-                batch_size = len(embeddings[key].lengths())
                 pooled_embeddings[key] = JaggedTensor(
                     values=pooled_values,
-                    lengths=torch.ones(batch_size, dtype=torch.int32, device=pooled_values.device),
-                    offsets=torch.arange(batch_size + 1, dtype=torch.int32, device=pooled_values.device)
+                    lengths=torch.ones(self.batch_size, dtype=torch.int32, device=pooled_values.device),
+                    offsets=torch.arange(self.batch_size + 1, dtype=torch.int32, device=pooled_values.device)
                 )
             else:
                 # 保持原JaggedTensor
                 pooled_embeddings[key] = embeddings[key]
         
-        # 处理成为transformer需要的输入token序列
-        # 注意：现在是采样了第一个seq slot作为样例来提取lengths&&offsets 稍微验证了一下这里不同slot的length&&offsets 结果是一样的
-        item_jt = pooled_embeddings[self._SEQ_SLOTS[0]]
-        # sequence_embeddings = item_jt.values()  # shape: (total_items, embedding_dim)
-        sequence_embeddings_lengths = item_jt.lengths()
-        sequence_embeddings_offsets = item_jt.offsets()
-        sequence_jts = [pooled_embeddings[key] for key in pooled_embeddings.keys() if key in self._SEQ_SLOTS]
-        # list[seq_slot_snum: 9, tensor([batch_total_items, embedding_dim])] 注意这里的batch_total_items大小为 -> \sum_{i=1}^{B} L_i 其中B为batch size L_i为batch内第i个item的长度
-        sequence_jts_values = [jt.values() for jt in sequence_jts]
-        # 处理生产 sequence_embeddings
-        concatenated_sequence_features = torch.cat(sequence_jts_values, dim=-1)
-        sequence_embeddings = self._sequence_mlp(concatenated_sequence_features)
+        # ---- sequence ----
+        # 采样第一个 seq slot 作为样例提取到 lengths&&offsets
+        base_jt = pooled_embeddings[self._SEQ_SLOTS[0]]  # JaggedTensor
+        sequence_embeddings_lengths = base_jt.lengths()
+        sequence_embeddings_offsets = base_jt.offsets()
+        max_seq_len = int(base_jt.lengths().max().item())
+
+        sequence_jts = [pooled_embeddings[key] for key in pooled_embeddings.keys() if key in self._SEQ_SLOTS]  # list[jt0, jt1, ...]
+        sequence_jts_values = [jt.values() for jt in sequence_jts]                # list: [seq_slot_num: 9, tensor([batch_total_items, embedding_dim])]
+        concatenated_sequence_features = torch.cat(sequence_jts_values, dim=-1)   # [batch_total_items, seq_slot_num * embedding_dim]
+        sequence_embeddings = self._sequence_mlp(concatenated_sequence_features)  # [batch_total_items, token_dim]
         
+        # padding
+        sequences_tokens = torch.ops.fbgemm.jagged_to_padded_dense(
+            sequence_embeddings,            # [batch_total_items, token_dim]
+            [sequence_embeddings_offsets],  # list of offsets
+            [max_seq_len],                  # max length
+            0.0                             # padding value
+        )  # [B, L, token_dim]
+
+        # ---- candidate ----
+        candidate_jts = [pooled_embeddings[key] for key in pooled_embeddings.keys() if key in self._POOLING_SLOTS]  # list[jt0, jt1, ...]
+        candidate_jts_values = [jt.values() for jt in candidate_jts]               # list:[candidate_slot_num, tensor([batch_size, embedding_dim])]
+        concatenated_candidate_features = torch.cat(candidate_jts_values, dim=-1)  # [batch_size, candidate_slot_num * embedding_dim]
+
+        # MLP
+        candidate_tokens = self._candidate_mlp(concatenated_candidate_features)  # [batch_size, token_dim]
+        candidate_tokens = rearrange(candidate_tokens, 'b d -> b 1 d')           # [batch_size, 1, token_dim]
+
+        # concate seq&&candidate
+        input_tokens = torch.cat([sequences_tokens, candidate_tokens], dim=1)    # [batch_size, L+1, token_dim]
+
+        # ---- padding mask ----
+        padding_mask = torch.arange(  # [batch_size, L]
+            max_seq_len, 
+            device=sequences_tokens.device
+        )[None, :] < sequence_embeddings_lengths[:, None]
+        candidate_mask = torch.ones(  # [batch_size, 1]
+            self.batch_size, 1, 
+            dtype=torch.bool, 
+            device=input_tokens.device
+        )
+        padding_mask = torch.cat([padding_mask, candidate_mask], dim=1)  # [batch_size, L+1]
+
+        return  input_tokens, padding_mask
+
+        """
         # TODO: add other kwargs
         # sequence_max_seqlen = batch.feature_to_max_seqlen[batch.item_feature_name]
-
         # TODO: 1. add other tokens 2. 划分不同类别的特征来实现，比如说可以分为seqs actions context
         # TODO: interleave action tokens with item tokens
-
         # TODO: 后续有其他context特征的时候这里也需要想应的修改
-        # 收集并拼接 pooling的 的所有特征
-        candidate_jts = [pooled_embeddings[key] for key in pooled_embeddings.keys() if key in self._POOLING_SLOTS]
-
-        # # TODO: 处理为jagged data    candidate处理
+        # # TODO: 处理为jagged data
         # candidate_seqlen = None
         # candidate_seqlen_offsets = None
-        if candidate_jts:
-            # TODO: 处理为jagged data
-            candidate_jts_values = [jt.values() for jt in candidate_jts]
-            # candidate_max_seqlens = [batch.feature_to_max_seqlen[name] for name in batch.candidate_feature_names]
-            # candidate_jts_offsets = [jt.offsets() for jt in candidate_jts]
-            # from hstu.ops.cuda_ops.JaggedTensorOpFunction import jagged_2D_tensor_concat
-            # (candidate_sequence_embeddings) = jagged_2D_tensor_concat(
-            #     candidate_jts_values,
-            #     candidate_jts_offsets,
-            # )
-            # 拼接所有其他特征并通过MLP生成 candidate tokens
-            concatenated_candidate_features = torch.cat(candidate_jts_values, dim=-1)  # (batch_size, total_dim)
-            candidate_tokens = self._candidate_mlp(concatenated_candidate_features)   # (batch_size, embedding_dim)
-            # 转为(B, 1, dim)
-            candidate_tokens = rearrange(candidate_tokens, 'b d -> b 1 d')
-            
-            # 现在先实现padding seq序列的形式
-            # 将 jagged tensor 转换为 (B, L, dim) 格式
-            batch_size = len(sequence_embeddings_lengths)
-            # 直接用 offsets 切片
-            sequences_embeddings = [
-                sequence_embeddings[sequence_embeddings_offsets[i]:sequence_embeddings_offsets[i+1]]
-                for i in range(batch_size)
-            ]
-            # Padding
-            padded_sequences_embeddings = torch.nn.utils.rnn.pad_sequence(
-                sequences_embeddings,
-                batch_first=True,
-                padding_value=0.0
-            )  # (B, L, dim)
 
-            # 拼接两个序列
-            input_tokens = torch.cat([padded_sequences_embeddings, candidate_tokens], dim=1)  # (B, L+1, d)
+        # candidate_max_seqlens = [batch.feature_to_max_seqlen[name] for name in batch.candidate_feature_names]
+        # candidate_jts_offsets = [jt.offsets() for jt in candidate_jts]
+        # from hstu.ops.cuda_ops.JaggedTensorOpFunction import jagged_2D_tensor_concat
+        # (candidate_sequence_embeddings) = jagged_2D_tensor_concat(
+        #     candidate_jts_values,
+        #     candidate_jts_offsets,
+        # )
 
-            # 输出attention mask
-            # TODO: 提前设置好max_seq_len，这里就可以直接穿参数进来了
-            max_seq_len = padded_sequences_embeddings.shape[1]  # the dim of the middle part which is L
-            padding_mask = torch.arange(
-                max_seq_len, 
-                device=padded_sequences_embeddings.device
-            )[None, :] < sequence_embeddings_lengths[:, None]
-             # 更新 mask（candidate token 是有效的）
-            candidate_mask = torch.ones(
-                batch_size, 1, 
-                dtype=torch.bool, 
-                device=input_tokens.device
-            )
-            padding_mask = torch.cat([padding_mask, candidate_mask], dim=1)
-
-
-            # TODO： 插入数据到结尾处
-            # # 为每个序列插入candidate token到末尾
-            # offsets = item_jt.offsets()
-            # new_embeddings = []
-            # new_lengths = []
-            # for i in range(len(candidate_tokens)):# 这里是遍历的 batch size
-            #     start_idx = offsets[i]
-            #     end_idx = offsets[i+1]
-            #     original_length = end_idx - start_idx
-            #     # 在每个序列后添加对应的candidate token
-            #     seq_with_candidate = torch.cat([# 这里是拼接出来一个batch的一条样本
-            #         sequence_embeddings[start_idx:end_idx],
-            #         candidate_tokens[i:i+1]  # 注意顺序调换了
-            #     ], dim=0)
-            #     new_embeddings.append(seq_with_candidate)
-            #     # TODO： n个candidate的时候这里的逻辑需要修改
-            #     new_lengths.append(original_length + 1)
-        else:
-            raise ValueError(
-                "Candidate feature slots must exist. Please check your input data. "
-            )
-
+        # TODO： 插入数据到结尾处
+        # # 为每个序列插入candidate token到末尾
+        # offsets = base_jt.offsets()
+        # new_embeddings = []
+        # new_lengths = []
+        # for i in range(len(candidate_tokens)):# 这里是遍历的 batch size
+        #     start_idx = offsets[i]
+        #     end_idx = offsets[i+1]
+        #     original_length = end_idx - start_idx
+        #     # 在每个序列后添加对应的candidate token
+        #     seq_with_candidate = torch.cat([# 这里是拼接出来一个batch的一条样本
+        #         sequence_embeddings[start_idx:end_idx],
+        #         candidate_tokens[i:i+1]  # 注意顺序调换了
+        #     ], dim=0)
+        #     new_embeddings.append(seq_with_candidate)
+        #     # TODO： n个candidate的时候这里的逻辑需要修改
+        #     new_lengths.append(original_length + 1)
         # TODO： 插入数据到结尾处(这里现在先不用jagged tensor这种数据格式)
         # sequence_embeddings = torch.cat(new_embeddings, dim=0)# 给这个batch的样本都拼接起来
         # TODO: 增加offsets的记录，因为一个batch内的每一条样本的长度是不固定的
         # 拼接好的序列可能是这个样子的：[emb_1, emb_2, emb_3, candidate_1, emb_4, emb_5, emb_6, emb_7, emb_8, candidate_2]
-        
-        
-        return  input_tokens, padding_mask
+        """
 
 # TODO: 封装函数
 class SlotMLP(nn.Module):
@@ -923,8 +906,24 @@ def create_model(args, device):
 
     return model
 
+def _build_profiler(args):
+    if not args.profile or local_rank != 0:
+        return None
+    os.makedirs(args.profile_dir, exist_ok=True)
+    return prof.profile(
+        activities=[prof.ProfilerActivity.CPU, prof.ProfilerActivity.CUDA],
+        schedule=prof.schedule(wait=args.profile_wait, warmup=args.profile_warmup, active=args.profile_active, repeat=1),
+        on_trace_ready=prof.tensorboard_trace_handler(args.profile_dir),
+        record_shapes=True,
+        profile_memory=True,
+        with_stack=False,
+    )
 
-def train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metric, copc_metric, epoch, total_epochs, log_interval=10000):
+def train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metric, copc_metric, epoch, total_epochs, log_interval=10000, 
+    scaler=None,
+    torch_profiler=None,
+    ):
+
     model.train()
     current_interval_loss = 0 # 用于计算最近 N 个 batch 的平均 loss
     time_spend = 0
@@ -974,18 +973,37 @@ def train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metri
             # 构造占位 batch
             features, labels = placeholder_features, placeholder_labels
 
-        predict_ctr, logits = model(features)
+        # predict_ctr, logits = model(features)
+        with record_function("forward"):
+            if scaler is not None:
+                with torch.autocast(device_type="cuda", dtype=torch.float16):
+                    predict_ctr, logits = model(features)
+                    loss = (torch.sum(loss_fn(logits, labels), dim=0) if has_local else logits.sum() * 0.0)
+            else:
+                predict_ctr, logits = model(features)
+                loss = (torch.sum(loss_fn(logits, labels), dim=0) if has_local else logits.sum() * 0.0)
 
-        # ====== 占位 loss 必须为 0 ======
-        if has_local:
-            bce_losses = loss_fn(logits, labels)
-            loss = torch.sum(bce_losses, dim=0)
-        else:
-            loss = logits.sum() * 0.0    # 安全：必然为 0
+        with record_function("backward+step"):
+            if scaler is not None:
+                scaler.scale(loss).backward()
+                scaler.step(dense_optimizer)
+                scaler.update()
+                dense_optimizer.zero_grad(set_to_none=True)
+            else:
+                loss.backward()
+                dense_optimizer.step()
+                dense_optimizer.zero_grad(set_to_none=True)
 
-        loss.backward()
-        dense_optimizer.step()
-        dense_optimizer.zero_grad(set_to_none=True)
+        # # ====== 占位 loss 必须为 0 ======
+        # if has_local:
+        #     bce_losses = loss_fn(logits, labels)
+        #     loss = torch.sum(bce_losses, dim=0)
+        # else:
+        #     loss = logits.sum() * 0.0    # 安全：必然为 0
+
+        # loss.backward()
+        # dense_optimizer.step()
+        # dense_optimizer.zero_grad(set_to_none=True)
         
         # ---- loss ----
         if has_local:
@@ -994,9 +1012,7 @@ def train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metri
         with torch.no_grad():
             if has_local:
                 auc_metric.update(predict_ctr, labels)
-                # copc_metric.update(predict_ctr, labels)
                 copc_metric.update(predict_ctr, labels, valid=True)
-                # metric_has_data = True
             else:
                 # 忽略fake批次数据的指标更新
                 copc_metric.update(predict_ctr, labels, valid=False)
@@ -1024,6 +1040,9 @@ def train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metri
             current_interval_loss = 0
             auc_metric.reset()
             copc_metric.reset()
+
+        if torch_profiler is not None:
+            torch_profiler.step()
 
         if step != 0:
             tt = time.time() - st
@@ -1166,13 +1185,40 @@ def train(args):
     # copc_metric = CustomCOPC().to(device)
     copc_metric = StreamingCOPC().to(device)
 
-    for epoch in range(args.epochs):
-        print("Start Training...")
-        st = time.time()
-        train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metric, copc_metric, epoch, args.epochs)
-        print("Finish Training...  Spend (s)", time.time() - st)
-        # 训练过程中不进行测试
-        # test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epoch, args.epochs)
+    scaler = torch.amp.GradScaler('cuda', enabled=bool(args.amp))
+    torch_profiler = _build_profiler(args)
+
+    # 让 profiler 作为上下文管理器更安全
+    if torch_profiler is None:
+        for epoch in range(args.epochs):
+            print("Start Training...")
+            st = time.time()
+            train_one_epoch(
+                model, train_dataloader, dense_optimizer, loss_fn,
+                auc_metric, copc_metric, epoch, args.epochs,
+                log_interval=10000,
+                scaler=scaler if args.amp else None,
+                torch_profiler=None,
+            )
+            print("Finish Training...  Spend (s)", time.time() - st)
+            # 训练过程中不进行测试
+            # test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epoch, args.epochs)
+    else:
+        with torch_profiler:
+            for epoch in range(args.epochs):
+                print("Start Training...")
+                st = time.time()
+                train_one_epoch(
+                    model, train_dataloader, dense_optimizer, loss_fn,
+                    auc_metric, copc_metric, epoch, args.epochs,
+                    log_interval=10000,
+                    scaler=scaler if args.amp else None,
+                    torch_profiler=torch_profiler,
+                )
+                print("Finish Training...  Spend (s)", time.time() - st)
+                # 训练过程中不进行测试
+                # test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epoch, args.epochs)
+
 
 def train_days(args):
     #循环指定数据集
