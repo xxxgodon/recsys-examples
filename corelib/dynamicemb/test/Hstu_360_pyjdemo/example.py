@@ -73,7 +73,7 @@ from modules.pyj_TransformerBlock import TransformerBlock
 import time
 from datetime import datetime, timedelta
 import torch.profiler as prof
-
+from common import jagged_to_padded_dense
 
 # Filter FBGEMM warning, make notebook clean
 warnings.filterwarnings(
@@ -192,6 +192,7 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=5, help="training epochs")
     # TODO: 优化这个参数的读取
     parser.add_argument("--batch_size", type=int, default=128, help="batch size")
+    parser.add_argument("--log_interval", type=int, default=10000, help="print log every N batches")
 
     # --- Optimization ---
     parser.add_argument("--lr_dense", type=float, default=0.000005, help="dense optimizer learning rate")
@@ -230,8 +231,8 @@ def parse_args():
     # --- Debug / Profiling ---
     parser.add_argument("--profile", action="store_true", help="enable torch.profiler (rank0 only)")
     parser.add_argument("--profile_dir", type=str, default="./tb_prof", help="tensorboard log dir for profiler traces")
-    parser.add_argument("--profile_wait", type=int, default=5)
-    parser.add_argument("--profile_warmup", type=int, default=5)
+    parser.add_argument("--profile_wait", type=int, default=1)
+    parser.add_argument("--profile_warmup", type=int, default=1)
     parser.add_argument("--profile_active", type=int, default=50)
 
     # --- AMP ---
@@ -609,11 +610,12 @@ class TransformerModel(nn.Module):
         self, 
         kjt: KeyedJaggedTensor, 
         # labels: torch.Tensor
-        ) -> torch.Tensor:
+    ) -> torch.Tensor:
 
         # embedding lookup
-        embeddings_awaitable: EmbeddingCollectionAwaitable = self._embedding_module(kjt)
-        embeddings: Dict[str, JaggedTensor] = embeddings_awaitable.wait()
+        # embeddings_awaitable: EmbeddingCollectionAwaitable = self._embedding_module(kjt)
+        # embeddings: Dict[str, JaggedTensor] = embeddings_awaitable.wait()
+        embeddings: Dict[str, JaggedTensor] = self._embedding_module(kjt)
 
         input_tokens, padding_mask = self._preprocess(embeddings)
 
@@ -760,7 +762,7 @@ class preprocessor(nn.Module):
         sequence_embeddings = self._sequence_mlp(concatenated_sequence_features)  # [batch_total_items, token_dim]
         
         # padding
-        sequences_tokens = torch.ops.fbgemm.jagged_to_padded_dense(
+        sequences_tokens = jagged_to_padded_dense(
             sequence_embeddings,            # [batch_total_items, token_dim]
             [sequence_embeddings_offsets],  # list of offsets
             [max_seq_len],                  # max length
@@ -963,11 +965,7 @@ def _build_profiler(args):
         with_stack=False,
     )
 
-def train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metric, copc_metric, epoch, total_epochs, log_interval=10000, 
-    scaler=None,
-    torch_profiler=None,
-    ):
-
+def train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metric, copc_metric, epoch, total_epochs, log_interval=10000, scaler=None, torch_profiler=None):
     model.train()
     current_interval_loss = 0 # 用于计算最近 N 个 batch 的平均 loss
     time_spend = 0
@@ -1240,7 +1238,7 @@ def train(args):
             train_one_epoch(
                 model, train_dataloader, dense_optimizer, loss_fn,
                 auc_metric, copc_metric, epoch, args.epochs,
-                log_interval=10000,
+                log_interval=args.log_interval,
                 scaler=scaler if args.amp else None,
                 torch_profiler=None,
             )
@@ -1255,7 +1253,7 @@ def train(args):
                 train_one_epoch(
                     model, train_dataloader, dense_optimizer, loss_fn,
                     auc_metric, copc_metric, epoch, args.epochs,
-                    log_interval=10000,
+                    args.log_interval,
                     scaler=scaler if args.amp else None,
                     torch_profiler=torch_profiler,
                 )
@@ -1341,7 +1339,13 @@ def train_days(args):
         for epoch in range(args.epochs):
             print("Start Training...")
             st = time.time()
-            train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metric, copc_metric, epoch, args.epochs)
+            train_one_epoch(
+                model, train_dataloader, dense_optimizer, loss_fn, 
+                auc_metric, copc_metric, epoch, args.epochs,
+                log_interval=args.log_interval,
+                scaler=None,
+                torch_profiler=None,
+            )
             print("Finish Training...  Spend (s)", time.time() - st)
 
         
