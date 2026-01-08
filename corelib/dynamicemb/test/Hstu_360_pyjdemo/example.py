@@ -1136,7 +1136,7 @@ def test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epo
             # 在每个计算设备（GPU）上汇总所有计算设备的状态
             dist.all_reduce(total_has, op=dist.ReduceOp.SUM)
 
-            print(f"rank {local_rank} step={step} has_local={has_local} total_has={total_has}")
+            # print(f"rank {local_rank} step={step} has_local={has_local} total_has={total_has}")
 
             # 如果所有设备都没有数据了 -> 结束测试
             if total_has.item() == 0:
@@ -1432,7 +1432,7 @@ def test(args):
     # cur_path = os.path.join(args.save_dir, cur_str)
         
     test_dataloader = ParquetArrowDataLoader(
-        data_dir=f"/parquet_data/{cur_str}",
+        data_dir=f"./dataset/parquet_data/{cur_str}",
         # data_dir=args.Test_data_path,
         batch_size=args.batch_size,
         keys_config=keys_config,
