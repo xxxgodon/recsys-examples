@@ -18,7 +18,7 @@ import torch.nn.functional  as F
 import pyarrow.dataset as ds
 import pyarrow as pa
 
-from config import Config as C
+from ref_config import Config as C
 
 from dynamicemb import (
     DynamicEmbDump,
@@ -56,9 +56,14 @@ from torchrec.modules.embedding_configs import EmbeddingConfig, EmbeddingBagConf
 from torchrec.modules.embedding_modules import EmbeddingCollection, EmbeddingBagCollection
 from torchrec.sparse.jagged_tensor import KeyedJaggedTensor
 
-
+import os
 import sys
-parent_dir = os.path.dirname(os.path.abspath(__file__))
+# import sys
+# parent_dir = os.path.dirname(os.path.abspath(__file__))
+# sys.path.append(os.path.join(os.path.dirname(parent_dir), 'benchmark', 'embedding_pooling'))
+# from embedding_pooling import embedding_pooling
+current_dir = os.getcwd()
+parent_dir = os.path.dirname(current_dir)
 sys.path.append(os.path.join(os.path.dirname(parent_dir), 'benchmark', 'embedding_pooling'))
 from embedding_pooling import embedding_pooling
 
@@ -117,8 +122,8 @@ def parse_args():
         "--embedding_dim", type=int, default=64, help="embedding dimension"
     )
     parser.add_argument(
-        "--num_embeddings", type=int, default=1000000000, help="number of embeddings"
-    )
+        "--num_embeddings", type=int, default=10000, help="number of embeddings"
+    )  # debugging
     parser.add_argument(
         "--mlp_dims",
         type=str,
@@ -183,6 +188,7 @@ class ParquetArrowDataLoader:
 
         my_files = all_files[rank::world_size]
 
+        # 延迟加载的dataset 这种数据集的读取发生在迭代iter的时候
         self.dataset = ds.dataset(my_files, format="parquet")
     
 
@@ -649,9 +655,10 @@ def train_one_epoch(model, train_loader, optimizer, loss_fn, epoch, total_epochs
             batch = None
 
         # 2. 每个 rank 报告自己还有没有数据
-        # local_has = 1 or 0
+        # local_has == 1 or 0
         local_has = torch.tensor([1 if has_local else 0], device=device)
         total_has = local_has.clone()
+        # 在每个计算设备（GPU）上汇总所有计算设备的状态
         dist.all_reduce(total_has)
 
         print(f"rank {local_rank}, total_has: {total_has}")
@@ -817,35 +824,13 @@ def train(args):
 
 
     train_loader = ParquetArrowDataLoader(
-    	data_dir="/parquet_data/2025-08-01",
+    	data_dir="./data_preprocess/parquet_data",
    		batch_size=args.batch_size,
     	keys_config=keys_config,
     	world_size=world_size,
     	rank=dist.get_rank()
 	)
 
-    """
-    test_loader = ParquetArrowDataLoader(
-        data_dir="/parquet_data_ddp/2025-10-02",
-        batch_size=args.batch_size,
-        keys_config=keys_config,
-        world_size=world_size,
-        rank=dist.get_rank()
-    )
-
-
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        collate_fn=collate_fn,
-        num_workers=min(32, os.cpu_count()),
-        sampler=test_sampler,
-        pin_memory=True,
-        prefetch_factor=2,
-        persistent_workers=True,
-    )
-    """
     model = create_model(args)
     model.to(device)
 
