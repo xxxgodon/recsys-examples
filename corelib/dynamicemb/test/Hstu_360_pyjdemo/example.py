@@ -63,18 +63,18 @@ from embedding_pooling import embedding_pooling
 
 # 自己创建的data_loader
 # TODO：后续可以参照HSTU的改进一下
-from pyj_test_utils import create_data_loader, ParquetArrowDataLoader
+from utils.create_dataloader import ParquetArrowDataLoader
 from torch.autograd.profiler import record_function
 from einops import rearrange
-from modules.pyj_metric import CustomAUC, CustomCOPC, StreamingAUC, StreamingCOPC
+from modules.metric import CustomAUC, CustomCOPC, StreamingAUC, StreamingCOPC
 from dataclasses import dataclass
-from modules.pyj_MLP import MLP
+from modules.MLP import MLP
 # from modules.pyj_multi_task_loss_module import MultiTaskLossModule
-from modules.pyj_TransformerBlock import TransformerBlock
+from modules.TransformerBlock import TransformerBlock
 import time
 from datetime import datetime, timedelta
 import torch.profiler as prof
-from common import jagged_to_padded_dense
+from utils.common import jagged_to_padded_dense
 
 # Filter FBGEMM warning, make notebook clean
 warnings.filterwarnings(
