@@ -66,7 +66,7 @@ from embedding_pooling import embedding_pooling
 from utils.create_dataloader import ParquetArrowDataLoader
 from torch.autograd.profiler import record_function
 from einops import rearrange
-from modules.metric import CustomAUC, CustomCOPC, StreamingAUC, StreamingCOPC
+from modules.metric import CustomAUC, CustomCOPC, StreamingAUC, StreamingCOPC, MaskedAUC
 from dataclasses import dataclass
 from modules.MLP import MLP
 # from modules.pyj_multi_task_loss_module import MultiTaskLossModule
@@ -1164,11 +1164,12 @@ def test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epo
             if has_local:
                 test_loss += loss.item()
                 # update metric
-                auc_metric.update(predict_ctr, labels)
+                auc_metric.update(predict_ctr, labels, valid=True)
                 copc_metric.update(predict_ctr, labels, valid=True)
             else:
                 # 忽略fake批次数据的指标更新
                 copc_metric.update(predict_ctr, labels, valid=False)
+                auc_metric.update(predict_ctr, labels, valid=False)
 
             if step != 0:
                 tt = time.time() - st
@@ -1181,11 +1182,13 @@ def test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epo
         epoch_auc = auc_metric.compute()
         epoch_copc = copc_metric.compute()
         avg_test_loss = test_loss / (step - 1)
-        print(f"==> [Test Summary] Epoch {epoch+1} | Loss: {avg_test_loss:.4f} | AUC: {epoch_auc:.4f} | COPC: {epoch_copc:.4f}")
+        if local_rank == 0:
+            print(f"==> [Test Summary] Epoch {epoch+1} | Loss: {avg_test_loss:.4f} | AUC: {epoch_auc:.4f} | COPC: {epoch_copc:.4f}")
 
 
         avg_time_spend = time_spend / (step - 1)
-        print(f"One Batch AVG Spend Time: {avg_time_spend}")
+        if local_rank == 0:
+            print(f"One Batch AVG Spend Time: {avg_time_spend}")
 
 
 def train(args):
@@ -1319,15 +1322,6 @@ def train_days(args):
         cur_str = cur.strftime("%Y-%m-%d") 
         print(cur_str)
 
-        cur_path = os.path.join(args.save_dir, cur_str)
-
-
-        if dist.get_rank() == 0:
-            if os.path.exists(cur_path):
-                shutil.rmtree(cur_path)
-        
-            os.makedirs(cur_path)
-
 
         train_dataloader = ParquetArrowDataLoader(
             data_dir=f"./dataset/parquet_data/{cur_str}",
@@ -1351,23 +1345,41 @@ def train_days(args):
             )
             print("Finish Training...  Spend (s)", time.time() - st)
 
-        
-        
-        cur_model_path = os.path.join(cur_path, f"model_rank{dist.get_rank()}.pt")
+        # ---- save model && emb ----
+        save_every = getattr(args, "save_every_days", 5)
+        day_idx = (cur - start_date).days
+        is_periodic_save = ((day_idx + 1) % save_every == 0)
+        is_last_day = (cur == end_date)
+        do_save = is_periodic_save or is_last_day
 
-        # ShardedDyanmicEmbeddingCollection.state_dict() will return a dummy tensor.
-        torch.save(
-            {
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": dense_optimizer.state_dict(),
-            },
-            cur_model_path,
-        )
+        if do_save:
+            cur_path = os.path.join(args.save_dir, cur_str)
 
-        cur_emb_path = os.path.join(cur_path, "dynamicemb")
+            if dist.get_rank() == 0:
+                if os.path.exists(cur_path):
+                    shutil.rmtree(cur_path)
+                os.makedirs(cur_path, exist_ok=True)
 
-        # rank0 will gether embedding from other ranks, so no need to identify rank info.
-        DynamicEmbDump(cur_emb_path, model, optim=True)
+            dist.barrier(device_ids=[local_rank])
+
+            cur_model_path = os.path.join(cur_path, f"model_rank{dist.get_rank()}.pt")
+            # ShardedDyanmicEmbeddingCollection.state_dict() will return a dummy tensor.
+            torch.save(
+                {
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": dense_optimizer.state_dict(),
+                },
+                cur_model_path,
+            )
+
+            dist.barrier(device_ids=[local_rank])
+
+            cur_emb_path = os.path.join(cur_path, "dynamicemb")
+            # rank0 will gether embedding from other ranks, so no need to identify rank info.
+            DynamicEmbDump(cur_emb_path, model, optim=True)
+
+            dist.barrier(device_ids=[local_rank])
+
         cur += timedelta(days=1)
 
 def test(args):
@@ -1400,9 +1412,7 @@ def test(args):
     loss_fn = nn.BCEWithLogitsLoss(reduction="none")
 
     # metrics
-    # auc_metric = CustomAUC().to(device)
-    auc_metric = StreamingAUC(num_bins=2048)
-    # copc_metric = CustomCOPC().to(device)
+    auc_metric = MaskedAUC().to(device)
     copc_metric = StreamingCOPC().to(device)
 
     last_model_path = os.path.join(args.save_dir, last_date, f"model_rank{dist.get_rank()}.pt")
