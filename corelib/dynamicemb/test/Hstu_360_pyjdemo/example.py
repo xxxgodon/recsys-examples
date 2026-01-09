@@ -211,10 +211,16 @@ def parse_args():
 
     # --- Checkpointing and Saving ---
     parser.add_argument(
-       "--save_dir",
+       "--model_save_dir",
        type=str,
        default="./model_checkpoints",
        help="path to save the model",
+    )
+    parser.add_argument(
+        "--out_base_dir",
+        type=str,
+        default="./output",
+        help="prediction output base directory",
     )
 
     # --- Training Range ---
@@ -1100,7 +1106,10 @@ def train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metri
     print(f"One Batch AVG Spend Time: {avg_time_spend}")
 
 
-def test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epoch, total_epochs):
+def test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epoch, total_epochs,
+    day: str,
+    out_base_dir: str,
+):
     model.eval()
     test_loss = 0
     time_spend = 0
@@ -1116,6 +1125,17 @@ def test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epo
     copc_metric.reset()
 
     global placeholder_features, placeholder_labels
+
+    # ---- prdict output ----
+    out_dir = os.path.join(out_base_dir, str(day), f"predict_output_rank{local_rank}")
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f"epoch_{epoch+1:03d}.tsv")
+    # 这里buffering给大一些，减少频繁flush的系统调用
+    f = open(out_path, "w", buffering=1024 * 1024)
+    f.write("key\tpctr\tlabel\n")
+    # keys_buf = []
+    # tpctr_buf = []
+    # tlabel_buf = []
 
     with torch.inference_mode():
         while True:
@@ -1144,7 +1164,7 @@ def test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epo
 
             # ---- forward ----
             if has_local:
-                features, labels = batch
+                features, labels, keys = batch
                 features = features.to(device, non_blocking=True)
                 labels = labels.to(device, non_blocking=True)
             else:
@@ -1171,12 +1191,27 @@ def test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epo
                 copc_metric.update(predict_ctr, labels, valid=False)
                 auc_metric.update(predict_ctr, labels, valid=False)
 
+            # ---- prdict output ----
+            if has_local:
+                pctr = predict_ctr.detach().squeeze(-1).to('cpu', non_blocking=True)
+                label = labels.detach().to('cpu', non_blocking=True)
+
+                # 逐行写；如果batch较大，也可以用join一次写完（更快）
+                lines = []
+                for i in range(label.numel()):
+                    lines.append(f"{keys[i]}\t{float(pctr[i].item()):.8f}\t{float(label[i].item())}\n")
+                f.writelines(lines)
+
             if step != 0:
                 tt = time.time() - st
                 #print("Finish One Batch...  Spend (s)", tt)
                 time_spend += tt
 
             step += 1
+        
+        # ---- product output ----
+        f.close()
+        dist.barrier()  # 可选：确保全部写完
 
         # compute metric when epoch end
         epoch_auc = auc_metric.compute()
@@ -1298,8 +1333,8 @@ def train_days(args):
     # copc_metric = CustomCOPC().to(device)
     copc_metric = StreamingCOPC().to(device)
     
-    last_model_path = os.path.join(args.save_dir, last_date, f"model_rank{dist.get_rank()}.pt")
-    last_emb_path = os.path.join(args.save_dir, last_date, "dynamicemb")
+    last_model_path = os.path.join(args.model_save_dir, last_date, f"model_rank{dist.get_rank()}.pt")
+    last_emb_path = os.path.join(args.model_save_dir, last_date, "dynamicemb")
 
     if os.path.exists(last_model_path) and os.path.exists(last_emb_path):
         #load model
@@ -1353,7 +1388,7 @@ def train_days(args):
         do_save = is_periodic_save or is_last_day
 
         if do_save:
-            cur_path = os.path.join(args.save_dir, cur_str)
+            cur_path = os.path.join(args.model_save_dir, cur_str)
 
             if dist.get_rank() == 0:
                 if os.path.exists(cur_path):
@@ -1415,8 +1450,8 @@ def test(args):
     auc_metric = MaskedAUC().to(device)
     copc_metric = StreamingCOPC().to(device)
 
-    last_model_path = os.path.join(args.save_dir, last_date, f"model_rank{dist.get_rank()}.pt")
-    last_emb_path = os.path.join(args.save_dir, last_date, "dynamicemb")
+    last_model_path = os.path.join(args.model_save_dir, last_date, f"model_rank{dist.get_rank()}.pt")
+    last_emb_path = os.path.join(args.model_save_dir, last_date, "dynamicemb")
     print(f"Load model from {last_model_path}")
     print(f"Load emb from {last_emb_path}")
 
@@ -1439,7 +1474,7 @@ def test(args):
     cur = start_date
     cur_str = cur.strftime("%Y-%m-%d") 
     print(cur_str)       
-    # cur_path = os.path.join(args.save_dir, cur_str)
+    # cur_path = os.path.join(args.model_save_dir, cur_str)
         
     test_dataloader = ParquetArrowDataLoader(
         data_dir=f"./dataset/parquet_data/{cur_str}",
@@ -1447,12 +1482,13 @@ def test(args):
         batch_size=args.batch_size,
         keys_config=keys_config,
         world_size=world_size,
-        rank=dist.get_rank()
+        rank=dist.get_rank(),
+        return_keys=True,
     )
 
     print("Start Testing...")
     st = time.time()
-    test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, 0, 1)
+    test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, 0, 1, day=cur_str, out_base_dir=args.out_base_dir,)
     print("Finish Testing...  Spend (s)", time.time() - st)
 
 # TODO

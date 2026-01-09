@@ -215,7 +215,9 @@ def create_data_loader(
     return dataloader, None, {} # sampler 返回 None
 
 class ParquetArrowDataLoader:
-    def __init__(self, data_dir, batch_size=1024, keys_config=None, world_size=1, rank=0):
+    def __init__(self, data_dir, batch_size=1024, keys_config=None, 
+        world_size=1, rank=0, return_keys=False, key_col="key_label"
+    ):
         """
         keys_config:
         {
@@ -233,6 +235,8 @@ class ParquetArrowDataLoader:
         self.keys_config = keys_config
         self.world_size = world_size
         self.rank = rank
+        self.return_keys = return_keys
+        self.key_col = key_col
 
 
         all_files = [
@@ -327,5 +331,9 @@ class ParquetArrowDataLoader:
         #)
 
         labels = torch.from_numpy(batch.column(self.keys_config["label"]).to_numpy()).float()
+
+        if self.return_keys:
+            keys = batch.column(self.key_col).to_pylist()
+            return kjt, labels, keys
 
         return kjt, labels
