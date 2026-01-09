@@ -216,7 +216,7 @@ def create_data_loader(
 
 class ParquetArrowDataLoader:
     def __init__(self, data_dir, batch_size=1024, keys_config=None, 
-        world_size=1, rank=0, return_keys=False, key_col="key_label"
+        world_size=1, rank=0, drop_last=True, return_keys=False, key_col="key_label"
     ):
         """
         keys_config:
@@ -235,6 +235,7 @@ class ParquetArrowDataLoader:
         self.keys_config = keys_config
         self.world_size = world_size
         self.rank = rank
+        self.drop_last = drop_last
         self.return_keys = return_keys
         self.key_col = key_col
 
@@ -280,6 +281,8 @@ class ParquetArrowDataLoader:
 
                 buffer = buffer.slice(self.batch_size)
 
+        if (not self.drop_last) and buffer is not None and buffer.num_rows > 0:
+            yield self._process_batch(buffer)
 
         yield None
 

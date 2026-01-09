@@ -764,6 +764,8 @@ class preprocessor(nn.Module):
         sequence_embeddings_lengths = base_jt.lengths()
         sequence_embeddings_offsets = base_jt.offsets()
         max_seq_len = int(base_jt.lengths().max().item())
+        # 动态获取 batch size 方便预测的时候处理最后一个截断batch
+        B = int(sequence_embeddings_lengths.numel())
 
         sequence_jts = [embeddings[key] for key in embeddings.keys() if key in self._SEQ_SLOTS]  # list[jt0, jt1, ...]
         sequence_jts_values = [jt.values() for jt in sequence_jts]                # list: [seq_slot_num: 9, tensor([batch_total_items, embedding_dim])]
@@ -793,7 +795,7 @@ class preprocessor(nn.Module):
             device=sequences_tokens.device
         )[None, :] < sequence_embeddings_lengths[:, None]
         candidate_mask = torch.ones(  # [batch_size, 1]
-            self.batch_size, 1, 
+            B, 1, 
             dtype=torch.bool, 
             device=input_tokens.device
         )
@@ -1129,9 +1131,9 @@ def test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epo
     # ---- prdict output ----
     out_dir = os.path.join(out_base_dir, str(day), f"predict_output_rank{local_rank}")
     os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, f"epoch_{epoch+1:03d}.tsv")
+    out_path = os.path.join(out_dir, f"epoch_{epoch+1:03d}.txt")
     # 这里buffering给大一些，减少频繁flush的系统调用
-    f = open(out_path, "w", buffering=1024 * 1024)
+    f = open(out_path, "w", buffering=1024 * 1024, encoding="utf-8")
     f.write("key\tpctr\tlabel\n")
     # keys_buf = []
     # tpctr_buf = []
@@ -1483,6 +1485,7 @@ def test(args):
         keys_config=keys_config,
         world_size=world_size,
         rank=dist.get_rank(),
+        drop_last=False,
         return_keys=True,
     )
 
