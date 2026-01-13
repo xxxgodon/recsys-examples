@@ -50,7 +50,6 @@ from torchrec.distributed.planner.types import ShardingPlan
 from torchrec.distributed.types import ShardingType
 from torchrec.modules.embedding_configs import EmbeddingConfig
 from torchrec.modules.embedding_modules import EmbeddingCollection
-# from torchrec.sparse.jagged_tensor import KeyedJaggedTensor
 from torchrec.sparse.jagged_tensor import JaggedTensor, KeyedJaggedTensor
 
 import os
@@ -61,15 +60,13 @@ sys.path.append(os.path.join(parent_dir, 'recsys-examples', 'corelib', 'dynamice
 print("nvidia dynamic embedding pooling path:", (os.path.join(parent_dir, 'recsys-examples', 'corelib', 'dynamicemb', 'benchmark', 'embedding_pooling')))
 from embedding_pooling import embedding_pooling
 
-# 自己创建的data_loader
-# TODO：后续可以参照HSTU的改进一下
+# ---- import custom modules ----
 from utils.create_dataloader import ParquetArrowDataLoader
 from torch.autograd.profiler import record_function
 from einops import rearrange
 from modules.metric import CustomAUC, CustomCOPC, StreamingAUC, StreamingCOPC, MaskedAUC
 from dataclasses import dataclass
 from modules.MLP import MLP
-# from modules.pyj_multi_task_loss_module import MultiTaskLossModule
 from modules.TransformerBlock import TransformerBlock
 import time
 from datetime import datetime, timedelta
@@ -195,12 +192,11 @@ def parse_args():
 
     # --- Training Loop ---
     parser.add_argument("--epochs", type=int, default=5, help="training epochs")
-    # TODO: 优化这个参数的读取
     parser.add_argument("--batch_size", type=int, default=128, help="batch size")
     parser.add_argument("--log_interval", type=int, default=10000, help="print log every N batches")
 
     # --- Optimization ---
-    parser.add_argument("--lr_dense", type=float, default=0.000005, help="dense optimizer learning rate")
+    parser.add_argument("--lr_dense", type=float, default=0.00005, help="dense optimizer learning rate")
     parser.add_argument("--lr_sparse", type=float, default=0.05, help="dense optimizer learning rate")
     
     # --- DynamicEmb Specifics ---
@@ -486,47 +482,7 @@ def apply_dmp(model, args, training):
     )
     return dmp
 
-@dataclass
-class SlotEmbeddingConfig:
-    """SLOT embedding config datatype"""
-    slot_name: str
-    embedding_dim: int
-    num_embeddings: int
-
-# TODO: 这里的配置移动到其他位置 通过args导入进来
 def get_embedding_configs(args):
-    """
-    # # 定义每个slot的配置 但是现在使用embedding collection的话嵌入维度要求必须一致
-    # UNIFIED_EMBEDDING_DIM = args.embedding_dim
-    # slot_configs = [
-    #     SlotEmbeddingConfig(
-    #         slot_name='0', 
-    #         embedding_dim=UNIFIED_EMBEDDING_DIM, 
-    #         num_embeddings=500000),
-    #     SlotEmbeddingConfig(
-    #         slot_name='73', 
-    #         embedding_dim=UNIFIED_EMBEDDING_DIM, 
-    #         num_embeddings=1000000),
-    #     SlotEmbeddingConfig(
-    #         slot_name='1801', 
-    #         embedding_dim=UNIFIED_EMBEDDING_DIM, 
-    #         num_embeddings=1000000),
-    # ]
-    # valid_configs = [c for c in slot_configs if c.slot_name in args.ALL_SLOTS]
-
-    # eb_configs = []
-    # for config in valid_configs:
-    #     eb_configs.append(
-    #         EmbeddingConfig(
-    #         name=f"table_{config.slot_name}",
-    #         embedding_dim=config.embedding_dim,
-    #         num_embeddings=config.num_embeddings,
-    #         feature_names=[config.slot_name],
-    #         data_type=DataType.FP32,
-    #     ))
-    """
-    
-    # return eb_configs
     eb_config = EmbeddingConfig(
             name="sparse_table",
             embedding_dim=args.embedding_dim,
@@ -546,15 +502,10 @@ def get_embedding_module(eb_configs):
             device=torch.device("meta")
         )
 
-# TODO：using nvidia recsys-example's JaggedData data structure
-# from modules.jagged_data import JaggedData
 class TransformerModel(nn.Module):
     def __init__(
         self,
         args,
-        # TODO: using hstu arch
-        # hstu_config: HSTUConfig,
-        # task_config: RankingConfig,
     ):
         super().__init__()
         self._POOLING_SLOTS = args.POOLING_SLOTS
@@ -597,30 +548,9 @@ class TransformerModel(nn.Module):
             1
         )
 
-        """
-        # self._loss_module = MultiTaskLossModule(
-        #     # num_classes=task_config.prediction_head_arch[-1],
-        #     # num_tasks=task_config.num_tasks,
-        #     num_classes = 1,
-        #     num_tasks = 1,
-        #     reduction="none",
-        # )
-        # self._metric_module = get_multi_event_metric_module(
-        #     num_classes=task_config.prediction_head_arch[-1],
-        #     num_tasks=task_config.num_tasks,
-        #     metric_types=task_config.eval_metrics,
-        #     comm_pg=parallel_state.get_data_parallel_group(with_context_parallel=True),
-        # )
-
-        # 解耦到外部
-        # self.auc_metric = CustomAUC()
-        # self.copc_metric = CustomCOPC()
-        """
-
     def forward(
         self, 
         kjt: KeyedJaggedTensor, 
-        # labels: torch.Tensor
     ) -> torch.Tensor:
 
         # embedding lookup
@@ -655,10 +585,7 @@ class TransformerModel(nn.Module):
         # liner layer to scaler
         logits = self._linear(logits)  # [B, 1]
 
-        predict_ctr = torch.sigmoid(logits)
-
-        # # attain labels from the batchdata
-        # bce_losses = self._loss_module(logits, labels)
+        predict_ctr = torch.sigmoid(logits)  # [B, 1]
         
         return predict_ctr.squeeze(-1), logits.squeeze(-1)
 
@@ -703,7 +630,6 @@ class preprocessor(nn.Module):
         total_candidate_features_dim,
         total_sequence_dim,
         token_dim,
-        # config: Union[HSTUConfig, InferenceHSTUConfig],
         # is_inference: bool,
     ):
         super().__init__()
@@ -719,42 +645,6 @@ class preprocessor(nn.Module):
             input_dim=total_candidate_features_dim,
             output_dim=token_dim
         )
-    
-        """
-        # TODO: add MLP layer
-        # self._item_mlp = None
-        # self._contextual_mlp = None
-        # if config.hstu_preprocessing_config is not None:
-        #     if config.hstu_preprocessing_config.item_embedding_dim > 0:
-        #         self._item_mlp = MLP(
-        #             in_size=config.hstu_preprocessing_config.item_embedding_dim,
-        #             layer_sizes=[config.hidden_size, config.hidden_size],
-        #             activation="relu",
-        #             bias=True,
-        #         )
-        #     if config.hstu_preprocessing_config.contextual_embedding_dim > 0:
-        #         self._contextual_mlp = MLP(
-        #             in_size=config.hstu_preprocessing_config.contextual_embedding_dim,
-        #             layer_sizes=[config.hidden_size, config.hidden_size],
-        #             activation="relu",
-        #             bias=True,
-        #         )
-
-        # # TODO: add rab kwarg
-        # self._positional_encoder: Optional[HSTUPositionalEncoder] = None
-        # if config.position_encoding_config is not None:
-        #     self._positional_encoder = HSTUPositionalEncoder(
-        #         num_position_buckets=config.position_encoding_config.num_position_buckets,
-        #         num_time_buckets=config.position_encoding_config.num_time_buckets,
-        #         embedding_dim=config.hidden_size,
-        #         is_inference=is_inference,
-        #         use_time_encoding=config.position_encoding_config.use_time_encoding,
-        #         training_dtype=self._training_dtype,
-        #         static_max_seq_len=config.position_encoding_config.static_max_seq_len,
-        #     )
-
-        # TODO: 考虑其他的参数&&配置
-        """
 
     # TODO: using nvidia recsys-example's JaggedData data structure
     def forward(
@@ -805,117 +695,6 @@ class preprocessor(nn.Module):
 
         return  input_tokens, padding_mask
 
-        """
-        # # embedding pooling
-        # # embed_list = [embedding_pooling(embeddings[key].values(), embeddings[key].offsets(), "mean") if key in self._POOLING_SLOTS else embeddings[key].values() for key in embeddings.keys()]
-        # # 保持原本的jagged tensor格式 && 使用dict格式
-        # pooled_embeddings = {}
-        # for key in embeddings.keys():
-        #     if key in self._POOLING_SLOTS:
-        #         # pooling后包装成JaggedTensor
-        #         pooled_values = embedding_pooling(
-        #             embeddings[key].values(), 
-        #             embeddings[key].offsets(), 
-        #             "mean"
-        #         )
-        #         # 创建新的JaggedTensor，lengths变为全1（每个样本一个embedding）
-        #         pooled_embeddings[key] = JaggedTensor(
-        #             values=pooled_values,
-        #             lengths=torch.ones(self.batch_size, dtype=torch.int32, device=pooled_values.device),
-        #             offsets=torch.arange(self.batch_size + 1, dtype=torch.int32, device=pooled_values.device)
-        #         )
-        #     else:
-        #         # 保持原JaggedTensor
-        #         pooled_embeddings[key] = embeddings[key]
-        
-        # # ---- sequence ----
-        # # 采样第一个 seq slot 作为样例提取到 lengths&&offsets
-        # base_jt = pooled_embeddings[self._SEQ_SLOTS[0]]  # JaggedTensor
-        # sequence_embeddings_lengths = base_jt.lengths()
-        # sequence_embeddings_offsets = base_jt.offsets()
-        # max_seq_len = int(base_jt.lengths().max().item())
-
-        # sequence_jts = [pooled_embeddings[key] for key in pooled_embeddings.keys() if key in self._SEQ_SLOTS]  # list[jt0, jt1, ...]
-        # sequence_jts_values = [jt.values() for jt in sequence_jts]                # list: [seq_slot_num: 9, tensor([batch_total_items, embedding_dim])]
-        # concatenated_sequence_features = torch.cat(sequence_jts_values, dim=-1)   # [batch_total_items, seq_slot_num * embedding_dim]
-        # sequence_embeddings = self._sequence_mlp(concatenated_sequence_features)  # [batch_total_items, token_dim]
-        
-        # # padding
-        # sequences_tokens = torch.ops.fbgemm.jagged_to_padded_dense(
-        #     sequence_embeddings,            # [batch_total_items, token_dim]
-        #     [sequence_embeddings_offsets],  # list of offsets
-        #     [max_seq_len],                  # max length
-        #     0.0                             # padding value
-        # )  # [B, L, token_dim]
-
-        # # ---- candidate ----
-        # candidate_jts = [pooled_embeddings[key] for key in pooled_embeddings.keys() if key in self._POOLING_SLOTS]  # list[jt0, jt1, ...]
-        # candidate_jts_values = [jt.values() for jt in candidate_jts]               # list:[candidate_slot_num, tensor([batch_size, embedding_dim])]
-        # concatenated_candidate_features = torch.cat(candidate_jts_values, dim=-1)  # [batch_size, candidate_slot_num * embedding_dim]
-
-        # # MLP
-        # candidate_tokens = self._candidate_mlp(concatenated_candidate_features)  # [batch_size, token_dim]
-        # candidate_tokens = rearrange(candidate_tokens, 'b d -> b 1 d')           # [batch_size, 1, token_dim]
-
-        # # concate seq&&candidate
-        # input_tokens = torch.cat([sequences_tokens, candidate_tokens], dim=1)    # [batch_size, L+1, token_dim]
-
-        # # ---- padding mask ----
-        # padding_mask = torch.arange(  # [batch_size, L]
-        #     max_seq_len, 
-        #     device=sequences_tokens.device
-        # )[None, :] < sequence_embeddings_lengths[:, None]
-        # candidate_mask = torch.ones(  # [batch_size, 1]
-        #     self.batch_size, 1, 
-        #     dtype=torch.bool, 
-        #     device=input_tokens.device
-        # )
-        # padding_mask = torch.cat([padding_mask, candidate_mask], dim=1)  # [batch_size, L+1]
-
-        # return  input_tokens, padding_mask
-
-
-        # TODO: add other kwargs
-        # sequence_max_seqlen = batch.feature_to_max_seqlen[batch.item_feature_name]
-        # TODO: 1. add other tokens 2. 划分不同类别的特征来实现，比如说可以分为seqs actions context
-        # TODO: interleave action tokens with item tokens
-        # TODO: 后续有其他context特征的时候这里也需要想应的修改
-        # # TODO: 处理为jagged data
-        # candidate_seqlen = None
-        # candidate_seqlen_offsets = None
-
-        # candidate_max_seqlens = [batch.feature_to_max_seqlen[name] for name in batch.candidate_feature_names]
-        # candidate_jts_offsets = [jt.offsets() for jt in candidate_jts]
-        # from hstu.ops.cuda_ops.JaggedTensorOpFunction import jagged_2D_tensor_concat
-        # (candidate_sequence_embeddings) = jagged_2D_tensor_concat(
-        #     candidate_jts_values,
-        #     candidate_jts_offsets,
-        # )
-
-        # TODO： 插入数据到结尾处
-        # # 为每个序列插入candidate token到末尾
-        # offsets = base_jt.offsets()
-        # new_embeddings = []
-        # new_lengths = []
-        # for i in range(len(candidate_tokens)):# 这里是遍历的 batch size
-        #     start_idx = offsets[i]
-        #     end_idx = offsets[i+1]
-        #     original_length = end_idx - start_idx
-        #     # 在每个序列后添加对应的candidate token
-        #     seq_with_candidate = torch.cat([# 这里是拼接出来一个batch的一条样本
-        #         sequence_embeddings[start_idx:end_idx],
-        #         candidate_tokens[i:i+1]  # 注意顺序调换了
-        #     ], dim=0)
-        #     new_embeddings.append(seq_with_candidate)
-        #     # TODO： n个candidate的时候这里的逻辑需要修改
-        #     new_lengths.append(original_length + 1)
-        # TODO： 插入数据到结尾处(这里现在先不用jagged tensor这种数据格式)
-        # sequence_embeddings = torch.cat(new_embeddings, dim=0)# 给这个batch的样本都拼接起来
-        # TODO: 增加offsets的记录，因为一个batch内的每一条样本的长度是不固定的
-        # 拼接好的序列可能是这个样子的：[emb_1, emb_2, emb_3, candidate_1, emb_4, emb_5, emb_6, emb_7, emb_8, candidate_2]
-        """
-
-# TODO: 封装函数
 class SlotMLP(nn.Module):
     def __init__(self, input_dim, output_dim):
         super().__init__()
@@ -964,6 +743,7 @@ def create_model(args, device):
     model.to(device)
 
     return model
+
 
 def _build_profiler(args):
     if not args.profile or local_rank != 0:
@@ -1506,7 +1286,6 @@ def inc_dump(args):
     ...
 
 
-# ALL_SLOTS = ['0', '12', '13', '14', '15', '2', '20', '92', '501', '502', '503', '504', '505', '506', '507', '509', '510', '511', '513', '514', '515', '516', '517', '518', '521', '522', '523', '524', '525', '527', '528', '529', '532', '535', '536', '537', '538', '540', '541', '547', '548', '560', '561', '562', '66', '67', '68', '69', '70', '73', '74', '77', '78', '1200', '2001', '2002', '2003', '2004', '2005', '2006', '2007', '2008', '2009', '2010', '2011', '2012', '2013', '2014', '2015', '2016', '2017', '2018', '2019', '2020', '2100', '2101', '2102', '2103', '2104', '2105', '2106', '2107', '1810', '1506', '1800', '1801', '1802', '1803', '1804', '1805', '1806', '1807', '19']
 
 def main():
     args = parse_args()
