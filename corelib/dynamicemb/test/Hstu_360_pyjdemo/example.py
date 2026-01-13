@@ -145,7 +145,9 @@ def parse_args():
         "--ALL_SLOTS",
         type=List[int],
         # default=['0', '73', '1801'],
-        default=['0', '12', '13', '14', '15', '2', '20', '92', '320', '501', '502', '503', '504', '505', '506', '507', '508', '509', '510', '511', '513', '514', '515', '516', '517', '518', '520', '521', '522', '523', '524', '525', '527', '528', '529', '532', '533', '534', '535', '536', '537', '538', '540', '541', '547', '548', '560', '561', '562', '66', '67', '68', '69', '70', '73', '74', '77', '78', '800', '801', '802', '803', '814', '815', '816', '817', '818', '819', '825', '826', '1041', '1044', '1047', '1059', '1062', '912', '914', '917', '921', '927', '929', '935', '938', '939', '940', '942', '951', '961', '967', '971', '1100', '1109', '1110', '1501', '1810', '1506', '1800', '1801', '1802', '1803', '1804', '1805', '1806', '1807', '100', '101', '102', '103', '104', '105', '106', '109', '110', '111', '112', '113', '114', '115', '116', '118', '119', '120', '121', '126', '127', '1811', '1812', '1813', '1814', '1815', '1816', '1817', '1818', '1819', '19'],
+        default=['0', '12', '13', '14', '15', '2', '20', '92', '320', '501', '502', '503', '504', '505', '506', '507', '508', '509', '510', '511', '513', '514', '515', '516', '517', '518', '520', '521', '522', '523', '524', '525', '527', '528', '529', '532', '533', '534', '535', '536', '537', '538', '540', '541', '547', '548', '560', '561', '562', '66', '67', '68', '69', '70', '73', '74', '77', '78', '800', '801', '802', '803', '814', '815', '816', '817', '818', '819', '825', '826', '1041', '1044', '1047', '1059', '1062', '912', '914', '917', '921', '927', '929', '935', '938', '939', '940', '942', '951', '961', '967', '971', '1100', '1109', '1110', '1501', '1810', '1506', '1800', '1801', '1802', '1803', '1804', '1805', '1806', '1807', 
+                 # '100', '101', '102', '103', '104', '105', '106', '109', '110', '111', '112', '113', '114', '115', '116', '118', '119', '120', '121', '126', '127', 
+                 '1811', '1812', '1813', '1814', '1815', '1816', '1817', '1818', '1819', '19'],
         help="all input slots",
     )
     parser.add_argument(
@@ -153,7 +155,7 @@ def parse_args():
         type=List[int],
         # default=['0', '73'],
         default=['0', '12', '13', '14', '15', '2', '20', '92', '320', '501', '502', '503', '504', '505', '506', '507', '508', '509', '510', '511', '513', '514', '515', '516', '517', '518', '520', '521', '522', '523', '524', '525', '527', '528', '529', '532', '533', '534', '535', '536', '537', '538', '540', '541', '547', '548', '560', '561', '562', '66', '67', '68', '69', '70', '73', '74', '77', '78', '800', '801', '802', '803', '814', '815', '816', '817', '818', '819', '825', '826', '1041', '1044', '1047', '1059', '1062', '912', '914', '917', '921', '927', '929', '935', '938', '939', '940', '942', '951', '961', '967', '971', '1100', '1109', '1110', '1501', '1810', '1506', '1800', '1801', '1802', '1803', '1804', '1805', '1806', '1807', 
-        '100', '101', '102', '103', '104', '105', '106', '109', '110', '111', '112', '113', '114', '115', '116', '118', '119', '120', '121', '126', '127'
+        # '100', '101', '102', '103', '104', '105', '106', '109', '110', '111', '112', '113', '114', '115', '116', '118', '119', '120', '121', '126', '127'
         ],
         help="slots requiring pooling",
     )
@@ -171,11 +173,11 @@ def parse_args():
     )
 
     # --- Transformer / HSTU Architecture ---
-    parser.add_argument("--token_dim", type=int, default=64, help="Dimension of token embeddings")
+    parser.add_argument("--token_dim", type=int, default=256, help="Dimension of token embeddings")
     parser.add_argument("--num_attention_heads", type=int, default=2, help="Number of attention heads in Transformer")
     parser.add_argument("--num_transformer_layers", type=int, default=2, help="Number of Transformer layers")
-    parser.add_argument("--dim_feedforward", type=int, default=64, help="Dimension of the feedforward network in Transformer")
-    parser.add_argument("--dropout", type=float, default=0.1, help="Dropout rate")
+    parser.add_argument("--dim_feedforward", type=int, default=256, help="Dimension of the feedforward network in Transformer")
+    parser.add_argument("--dropout", type=float, default=0, help="Dropout rate")
     parser.add_argument("--max_seq_length", type=int, default=512, help="Maximum sequence length for user history")
     # parser.add_argument("--activation", type=str, default="relu", help="Activation function (relu, gelu, etc.)")
     # parser.add_argument(
@@ -658,7 +660,7 @@ class TransformerModel(nn.Module):
         # # attain labels from the batchdata
         # bce_losses = self._loss_module(logits, labels)
         
-        return predict_ctr, logits.squeeze(-1)
+        return predict_ctr.squeeze(-1), logits.squeeze(-1)
 
     def _initialize_embedding_dimensions(self):
         """
@@ -1129,15 +1131,12 @@ def test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epo
     global placeholder_features, placeholder_labels
 
     # ---- prdict output ----
-    out_dir = os.path.join(out_base_dir, str(day), f"predict_output_rank{local_rank}")
+    out_dir = os.path.join(out_base_dir, str(day))
     os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, f"epoch_{epoch+1:03d}.txt")
+    out_path = os.path.join(out_dir, f"predict_output_rank{local_rank}.txt")
     # 这里buffering给大一些，减少频繁flush的系统调用
     f = open(out_path, "w", buffering=1024 * 1024, encoding="utf-8")
-    f.write("key\tpctr\tlabel\n")
-    # keys_buf = []
-    # tpctr_buf = []
-    # tlabel_buf = []
+
 
     with torch.inference_mode():
         while True:
@@ -1201,7 +1200,7 @@ def test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epo
                 # 逐行写；如果batch较大，也可以用join一次写完（更快）
                 lines = []
                 for i in range(label.numel()):
-                    lines.append(f"{keys[i]}\t{float(pctr[i].item()):.8f}\t{float(label[i].item())}\n")
+                    lines.append(f"{keys[i]}\t{int(label[i].item())}\t{float(pctr[i].item()):.8f}\n")
                 f.writelines(lines)
 
             if step != 0:
@@ -1361,7 +1360,7 @@ def train_days(args):
 
 
         train_dataloader = ParquetArrowDataLoader(
-            data_dir=f"./dataset/parquet_data/{cur_str}",
+            data_dir=f"/data/pangyongjie/wjg_clouds/GR/dataset/parquet_data/{cur_str}",   # /data/pangyongjie/wjg_clouds/GR/dataset/parquet_data
             # data_dir=args.Train_data_path,
             batch_size=args.batch_size,
             keys_config=keys_config,
@@ -1479,7 +1478,7 @@ def test(args):
     # cur_path = os.path.join(args.model_save_dir, cur_str)
         
     test_dataloader = ParquetArrowDataLoader(
-        data_dir=f"./dataset/parquet_data/{cur_str}",
+        data_dir=f"/data/pangyongjie/wjg_clouds/GR/dataset/parquet_data/{cur_str}",   # /data/pangyongjie/wjg_clouds/GR/dataset/parquet_data
         # data_dir=args.Test_data_path,
         batch_size=args.batch_size,
         keys_config=keys_config,
