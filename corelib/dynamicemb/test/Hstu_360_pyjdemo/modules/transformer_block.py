@@ -50,8 +50,6 @@ class TransformerBlock(nn.Module):
             num_layers=num_layers
         )
         
-        # Layer Normalization
-        self.layer_norm = nn.LayerNorm(embedding_dim)
         
     def forward(
         self, 
@@ -85,8 +83,6 @@ class TransformerBlock(nn.Module):
             src_key_padding_mask=src_key_padding_mask
         )
         
-        # Layer normalization
-        output = self.layer_norm(output)
         
         return output
 
