@@ -62,7 +62,6 @@ from embedding_pooling import embedding_pooling
 
 # ---- import custom modules ----
 from utils.create_dataloader import ParquetArrowDataLoader
-from torch.autograd.profiler import record_function
 from einops import rearrange
 from modules.metric import CustomAUC, CustomCOPC, StreamingAUC, StreamingCOPC, MaskedAUC
 from dataclasses import dataclass
@@ -70,7 +69,6 @@ from modules.MLP import MLP
 from modules.TransformerBlock import TransformerBlock
 import time
 from datetime import datetime, timedelta
-import torch.profiler as prof
 from utils.common import jagged_to_padded_dense
 
 # Filter FBGEMM warning, make notebook clean
@@ -234,16 +232,6 @@ def parse_args():
         default="2025-12-21",
         help="train model end date",
     )
-
-    # --- Debug / Profiling ---
-    parser.add_argument("--profile", action="store_true", help="enable torch.profiler (rank0 only)")
-    parser.add_argument("--profile_dir", type=str, default="./tb_prof", help="tensorboard log dir for profiler traces")
-    parser.add_argument("--profile_wait", type=int, default=1)
-    parser.add_argument("--profile_warmup", type=int, default=1)
-    parser.add_argument("--profile_active", type=int, default=50)
-
-    # --- AMP ---
-    parser.add_argument("--amp", action="store_true", help="enable AMP (autocast + GradScaler)")
 
     parser.add_argument(
         "--seed", type=int, default=42, help="random seed used for initialization"
@@ -646,7 +634,6 @@ class preprocessor(nn.Module):
             output_dim=token_dim
         )
 
-    # TODO: using nvidia recsys-example's JaggedData data structure
     def forward(
         self,
         embeddings: Dict[str, JaggedTensor],
@@ -745,20 +732,7 @@ def create_model(args, device):
     return model
 
 
-def _build_profiler(args):
-    if not args.profile or local_rank != 0:
-        return None
-    os.makedirs(args.profile_dir, exist_ok=True)
-    return prof.profile(
-        activities=[prof.ProfilerActivity.CPU, prof.ProfilerActivity.CUDA],
-        schedule=prof.schedule(wait=args.profile_wait, warmup=args.profile_warmup, active=args.profile_active, repeat=1),
-        on_trace_ready=prof.tensorboard_trace_handler(args.profile_dir),
-        record_shapes=True,
-        profile_memory=True,
-        with_stack=False,
-    )
-
-def train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metric, copc_metric, epoch, total_epochs, log_interval=10000, scaler=None, torch_profiler=None):
+def train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metric, copc_metric, epoch, total_epochs, log_interval=10000):
     model.train()
     current_interval_loss = 0 # 用于计算最近 N 个 batch 的平均 loss
     time_spend = 0
@@ -808,37 +782,18 @@ def train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metri
             # 构造占位 batch
             features, labels = placeholder_features, placeholder_labels
 
-        # predict_ctr, logits = model(features)
-        with record_function("forward"):
-            if scaler is not None:
-                with torch.autocast(device_type="cuda", dtype=torch.float16):
-                    predict_ctr, logits = model(features)
-                    loss = (torch.sum(loss_fn(logits, labels), dim=0) if has_local else logits.sum() * 0.0)
-            else:
-                predict_ctr, logits = model(features)
-                loss = (torch.sum(loss_fn(logits, labels), dim=0) if has_local else logits.sum() * 0.0)
+        predict_ctr, logits = model(features)
 
-        with record_function("backward+step"):
-            if scaler is not None:
-                scaler.scale(loss).backward()
-                scaler.step(dense_optimizer)
-                scaler.update()
-                dense_optimizer.zero_grad(set_to_none=True)
-            else:
-                loss.backward()
-                dense_optimizer.step()
-                dense_optimizer.zero_grad(set_to_none=True)
+        # ====== 占位 loss 必须为 0 ======
+        if has_local:
+            bce_losses = loss_fn(logits, labels)
+            loss = torch.sum(bce_losses, dim=0)
+        else:
+            loss = logits.sum() * 0.0    # 安全：必然为 0
 
-        # # ====== 占位 loss 必须为 0 ======
-        # if has_local:
-        #     bce_losses = loss_fn(logits, labels)
-        #     loss = torch.sum(bce_losses, dim=0)
-        # else:
-        #     loss = logits.sum() * 0.0    # 安全：必然为 0
-
-        # loss.backward()
-        # dense_optimizer.step()
-        # dense_optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        dense_optimizer.step()
+        dense_optimizer.zero_grad(set_to_none=True)
         
         # ---- loss ----
         if has_local:
@@ -876,8 +831,8 @@ def train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metri
             auc_metric.reset()
             copc_metric.reset()
 
-        if torch_profiler is not None:
-            torch_profiler.step()
+        # if torch_profiler is not None:
+        #     torch_profiler.step()
 
         if step != 0:
             tt = time.time() - st
@@ -890,10 +845,7 @@ def train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metri
     print(f"One Batch AVG Spend Time: {avg_time_spend}")
 
 
-def test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epoch, total_epochs,
-    day: str,
-    out_base_dir: str,
-):
+def test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epoch, total_epochs, day: str, out_base_dir: str,):
     model.eval()
     test_loss = 0
     time_spend = 0
@@ -1030,7 +982,6 @@ def train(args):
 	# )
 
     # 创建模型
-    # TODO：对齐 example HSTU的实现
     model = create_model(args, device)
 
     dense_optimizer = Adam(
@@ -1049,39 +1000,17 @@ def train(args):
     # copc_metric = CustomCOPC().to(device)
     copc_metric = StreamingCOPC().to(device)
 
-    scaler = torch.amp.GradScaler('cuda', enabled=bool(args.amp))
-    torch_profiler = _build_profiler(args)
-
-    # 让 profiler 作为上下文管理器更安全
-    if torch_profiler is None:
-        for epoch in range(args.epochs):
-            print("Start Training...")
-            st = time.time()
-            train_one_epoch(
-                model, train_dataloader, dense_optimizer, loss_fn,
-                auc_metric, copc_metric, epoch, args.epochs,
-                log_interval=args.log_interval,
-                scaler=scaler if args.amp else None,
-                torch_profiler=None,
-            )
-            print("Finish Training...  Spend (s)", time.time() - st)
-            # 训练过程中不进行测试
-            # test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epoch, args.epochs)
-    else:
-        with torch_profiler:
-            for epoch in range(args.epochs):
-                print("Start Training...")
-                st = time.time()
-                train_one_epoch(
-                    model, train_dataloader, dense_optimizer, loss_fn,
-                    auc_metric, copc_metric, epoch, args.epochs,
-                    args.log_interval,
-                    scaler=scaler if args.amp else None,
-                    torch_profiler=torch_profiler,
-                )
-                print("Finish Training...  Spend (s)", time.time() - st)
-                # 训练过程中不进行测试
-                # test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epoch, args.epochs)
+    for epoch in range(args.epochs):
+        print("Start Training...")
+        st = time.time()
+        train_one_epoch(
+            model, train_dataloader, dense_optimizer, loss_fn,
+            auc_metric, copc_metric, epoch, args.epochs,
+            log_interval=args.log_interval,
+        )
+        print("Finish Training...  Spend (s)", time.time() - st)
+        # 训练过程中不进行测试
+        # test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epoch, args.epochs)
 
 
 def train_days(args):
@@ -1156,8 +1085,6 @@ def train_days(args):
                 model, train_dataloader, dense_optimizer, loss_fn, 
                 auc_metric, copc_metric, epoch, args.epochs,
                 log_interval=args.log_interval,
-                scaler=None,
-                torch_profiler=None,
             )
             print("Finish Training...  Spend (s)", time.time() - st)
 
@@ -1214,7 +1141,6 @@ def test(args):
 
 
     # 创建模型
-    # TODO：对齐 example HSTU的实现
     model = create_model(args, device)
 
     dense_optimizer = Adam(
