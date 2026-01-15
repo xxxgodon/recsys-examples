@@ -63,7 +63,6 @@ from einops import rearrange
 from modules.metric import CustomAUC, CustomCOPC, StreamingAUC, StreamingCOPC, MaskedAUC
 from dataclasses import dataclass
 from modules.MLP import MLP
-from modules.TransformerBlock import TransformerBlock
 import time
 from datetime import datetime, timedelta
 from utils.common import jagged_to_padded_dense
@@ -182,6 +181,12 @@ def parse_args():
         "--output_mlp_dims",
         type=List[int],
         default=[256, 128],
+        help="dimension of output MLP layer, with type List[int]",
+    )
+    parser.add_argument(
+        "--dnn_mlp_dims",
+        type=List[int],
+        default=[512, 256, 256, 128],
         help="dimension of output MLP layer, with type List[int]",
     )
 
@@ -390,211 +395,54 @@ def get_embedding_module(eb_configs):
             device=torch.device("meta")
         )
 
-class TransformerModel(nn.Module):
-    def __init__(
-        self,
-        args,
-    ):
+class DNNModel(nn.Module):
+    def __init__(self, args):
         super().__init__()
         self._POOLING_SLOTS = args.POOLING_SLOTS
-        self._SEQ_SLOTS = args.SEQ_SLOTS
         self.POS_SLOT = args.POS_SLOT
-        self.token_dim = args.token_dim
-        
         self.embedding_configs = get_embedding_configs(args)
         self._embedding_module = get_embedding_module(self.embedding_configs)
-        
-        _, self.total_candidate_dim, self.total_sequence_dim = self._initialize_embedding_dimensions()
 
-        self._preprocess = preprocessor(
-            args.batch_size,
-            self._POOLING_SLOTS, 
-            self._SEQ_SLOTS,
-            self.total_candidate_dim,
-            self.total_sequence_dim,
-            self.token_dim,
-        )
-        
-        self._transformer_module = TransformerBlock(
-            embedding_dim=self.token_dim,
-            num_heads=args.num_attention_heads,
-            num_layers=args.num_transformer_layers,
-            dropout=args.dropout,
-            ff_dim=args.dim_feedforward,
-            max_seq_length=args.max_seq_length,
-        )
-
-        self._output_mlp = MLP(
-            in_size = self.token_dim,
-            layer_sizes = args.output_mlp_dims,
+        self.mlp = MLP(
+            in_size = args.embedding_dim * len(self._POOLING_SLOTS),
+            layer_sizes = args.dnn_mlp_dims,
             last_activation = True,
         )
 
-        # 最后输出1维
-        self._linear = nn.Linear(
-            args.output_mlp_dims[-1] + args.embedding_dim,  # 拼接POS_SLOT的embedding
-            1
-        )
+        self.liner = nn.Linear(args.dnn_mlp_dims[-1] + args.embedding_dim, 1)
 
-    def forward(
-        self, 
-        kjt: KeyedJaggedTensor, 
-    ) -> torch.Tensor:
-
+    def forward(self, kjt: KeyedJaggedTensor) -> torch.Tensor:
         # embedding lookup
         # embeddings_awaitable: EmbeddingCollectionAwaitable = self._embedding_module(kjt)
         # embeddings: Dict[str, JaggedTensor] = embeddings_awaitable.wait()
         embeddings: Dict[str, JaggedTensor] = self._embedding_module(kjt)
 
-        input_tokens, padding_mask = self._preprocess(embeddings)
+        # pooling
+        pooled_embeddings = [
+            embedding_pooling(
+                embeddings[key].values(), 
+                embeddings[key].offsets(), 
+                "mean"
+            ) 
+            for key in self._POOLING_SLOTS
+        ]  # list:[tensor([batch_size, embedding_dim])]
 
-        # causal mask
-        seq_len = input_tokens.shape[1]             # L+1
-        causal_mask = torch.triu(
-            torch.ones(seq_len, seq_len, device=input_tokens.device), 
-            diagonal=1
-        ).bool()                                    # [L+1, L+1]
-        
-        # transformer block
-        output_tokens = self._transformer_module(   # [B, L+1, token_dim]
-            input_tokens, 
-            mask=causal_mask,
-            src_key_padding_mask=~padding_mask, # 注意：这里需要取反 这里True位置的元素会被mask掉
-        )
+        # concatenate all pooled embeddings
+        concatenated_features = torch.cat(pooled_embeddings, dim=-1)  # [batch_size, total_candidate_dim]
 
-        candidate_token_output = output_tokens[:, -1, :]    # [B, token_dim]
-        logits = self._output_mlp(candidate_token_output)   # [B, mlp_out_dim]
+        # MLP forward
+        logits = self.mlp(concatenated_features)  # [batch_size, dnn_mlp_dim]
 
         # concate POS_SLOT embedding
-        pos_slot_embedding = embeddings[self.POS_SLOT].values()  # [B, embedding_dim]
-        # print("[Debugging] pos_slot_embedding.shape:", pos_slot_embedding.shape)
-        logits = torch.concat([logits, pos_slot_embedding], dim=-1)  # [B, mlp_out_dim + embedding_dim]
+        pos_slot_embedding = embeddings[self.POS_SLOT].values()  # [batch_size, embedding_dim]
+        logits = torch.concat([logits, pos_slot_embedding], dim=-1)  # [batch_size, dnn_mlp_dim + embedding_dim]
 
         # liner layer to scaler
-        logits = self._linear(logits)  # [B, 1]
-
-        predict_ctr = torch.sigmoid(logits)  # [B, 1]
+        logits = self.liner(logits)  # [batch_size, 1]
+        predict_ctr = torch.sigmoid(logits)  # [batch_size, 1]
         
         return predict_ctr.squeeze(-1), logits.squeeze(-1)
 
-    def _initialize_embedding_dimensions(self):
-        """
-        Initialize embedding dimension configurations.
-        
-        Computes and sets:
-        1. slot_to_dim: Mapping from feature names to embedding dimensions
-        2. total_candidate_dim: Total dimension of candidate features
-        3. total_sequence_dim: Total dimension of sequence features
-        
-        Returns:
-            tuple: (slot_to_dim, total_candidate_dim, total_sequence_dim)
-        """
-        # 构建特征名到embedding维度的映射
-        slot_to_dim = {}
-        for config in self.embedding_configs:
-            for feature_name in config.feature_names:
-                slot_to_dim[feature_name] = config.embedding_dim
-        
-        # 计算候选特征的总维度
-        total_candidate_dim = sum(
-            slot_to_dim[slot] 
-            for slot in self._POOLING_SLOTS
-        )
-
-        total_sequence_dim = sum(
-            slot_to_dim[slot]
-            for slot in self._SEQ_SLOTS
-        )
-        
-        return slot_to_dim, total_candidate_dim, total_sequence_dim
-
-
-class preprocessor(nn.Module):
-    def __init__(
-        self,
-        batch_size,
-        POOLING_SLOTS,
-        SEQ_SLOTS,
-        total_candidate_features_dim,
-        total_sequence_dim,
-        token_dim,
-        # is_inference: bool,
-    ):
-        super().__init__()
-
-        self.batch_size = batch_size
-        self._POOLING_SLOTS = POOLING_SLOTS
-        self._SEQ_SLOTS = SEQ_SLOTS
-        self._sequence_mlp = SlotMLP(
-            input_dim=total_sequence_dim,
-            output_dim=token_dim
-        )
-        self._candidate_mlp = SlotMLP(
-            input_dim=total_candidate_features_dim,
-            output_dim=token_dim
-        )
-
-    def forward(
-        self,
-        embeddings: Dict[str, JaggedTensor],
-    ):
-        # ---- sequence ----
-        base_jt = embeddings[self._SEQ_SLOTS[0]]  # JaggedTensor
-        sequence_embeddings_lengths = base_jt.lengths()
-        sequence_embeddings_offsets = base_jt.offsets()
-        max_seq_len = int(base_jt.lengths().max().item())
-        # 动态获取 batch size 方便预测的时候处理最后一个截断batch
-        B = int(sequence_embeddings_lengths.numel())
-
-        sequence_jts = [embeddings[key] for key in embeddings.keys() if key in self._SEQ_SLOTS]  # list[jt0, jt1, ...]
-        sequence_jts_values = [jt.values() for jt in sequence_jts]                # list: [seq_slot_num: 9, tensor([batch_total_items, embedding_dim])]
-        concatenated_sequence_features = torch.cat(sequence_jts_values, dim=-1)   # [batch_total_items, seq_slot_num * embedding_dim]
-        sequence_embeddings = self._sequence_mlp(concatenated_sequence_features)  # [batch_total_items, token_dim]
-        
-        # padding
-        sequences_tokens = jagged_to_padded_dense(
-            sequence_embeddings,            # [batch_total_items, token_dim]
-            [sequence_embeddings_offsets],  # list of offsets
-            [max_seq_len],                  # max length
-            0.0                             # padding value
-        )  # [B, L, token_dim]
-
-        # ---- candidate ----
-        pooled_candidate_values = [embedding_pooling(embeddings[key].values(), embeddings[key].offsets(), "mean") for key in self._POOLING_SLOTS]  # list:[candidate_slot_num, tensor([batch_size, embedding_dim])]
-        concatenated_candidate_features = torch.cat(pooled_candidate_values, dim=-1)  # [batch_size, candidate_slot_num * embedding_dim]
-
-        candidate_tokens = self._candidate_mlp(concatenated_candidate_features)       # [batch_size, token_dim]
-        candidate_tokens = candidate_tokens.unsqueeze(1)                              # [batch_size, 1, token_dim]
-
-        input_tokens = torch.cat([sequences_tokens, candidate_tokens], dim=1)         # [batch_size, L+1, token_dim]
-
-        # ---- padding mask ----
-        padding_mask = torch.arange(  # [batch_size, L]
-            max_seq_len, 
-            device=sequences_tokens.device
-        )[None, :] < sequence_embeddings_lengths[:, None]
-        candidate_mask = torch.ones(  # [batch_size, 1]
-            B, 1, 
-            dtype=torch.bool, 
-            device=input_tokens.device
-        )
-        padding_mask = torch.cat([padding_mask, candidate_mask], dim=1)  # [batch_size, L+1]
-
-        return  input_tokens, padding_mask
-
-class SlotMLP(nn.Module):
-    def __init__(self, input_dim, output_dim):
-        super().__init__()
-        self.mlp = nn.Sequential(
-            nn.Linear(input_dim, 512),
-            nn.ReLU(),
-            nn.Linear(512, 256),
-            nn.ReLU(),
-            nn.Linear(256, output_dim),
-        )
-    
-    def forward(self, x):
-        return self.mlp(x)
 
 def build_placeholder_batch(keys, batch_size, device):
     # 每个样本长度为 1（不能为 0）
@@ -619,7 +467,7 @@ def build_placeholder_batch(keys, batch_size, device):
     return kjt, labels
 
 def create_model(args, device):
-    model = TransformerModel(args)
+    model = DNNModel(args)
 
     if local_rank == 0:
         print(model)
