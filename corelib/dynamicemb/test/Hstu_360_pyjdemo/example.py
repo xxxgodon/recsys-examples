@@ -959,6 +959,9 @@ def train_days(args):
         # all rank will load from the same files.
         DynamicEmbLoad(last_emb_path, model, optim=True)
 
+        print(f"Load model from {last_model_path}")
+        print(f"Load emb from {last_emb_path}")
+
         dist.barrier(device_ids=[local_rank])
 
 
