@@ -20,6 +20,7 @@ from dynamicemb import (
     DynamicEmbLoad,
     DynamicEmbScoreStrategy,
     DynamicEmbTableOptions,
+    DynamicEmbCheckMode,  # debugging pyj
     FrequencyAdmissionStrategy,
     KVCounter,
 )
@@ -394,6 +395,7 @@ def get_planner(
                 if caching
                 else total_hbm_need,
                 # debugging pyj
+                # safe_check_mode = DynamicEmbCheckMode.WARNING,
                 initializer_args=DynamicEmbInitializerArgs(
                     mode=DynamicEmbInitializerMode.NORMAL
                 ),
@@ -1196,9 +1198,9 @@ def train_days(args):
 
 
         train_dataloader = ParquetArrowDataLoader(
-            # data_dir=f"/data/pangyongjie/wjg_clouds/GR/dataset/parquet_data/{cur_str}",   # /data/pangyongjie/wjg_clouds/GR/dataset/parquet_data
+            data_dir=f"/data/pangyongjie/wjg_clouds/GR/dataset/parquet_data/{cur_str}",   # /data/pangyongjie/wjg_clouds/GR/dataset/parquet_data
             # data_dir=args.Train_data_path,
-            data_dir=f"/data/pangyongjie/clouds/GR/dataset/parquet_data/{cur_str}",
+            # data_dir=f"/data/pangyongjie/clouds/GR/dataset/parquet_data/{cur_str}",
             batch_size=args.batch_size,
             keys_config=keys_config,
             world_size=world_size,
@@ -1314,6 +1316,7 @@ def test(args):
     test_dataloader = ParquetArrowDataLoader(
         data_dir=f"/data/pangyongjie/wjg_clouds/GR/dataset/parquet_data/{cur_str}",   # /data/pangyongjie/wjg_clouds/GR/dataset/parquet_data
         # data_dir=args.Test_data_path,
+        # data_dir=f"/data/pangyongjie/clouds/GR/dataset/parquet_data/{cur_str}",
         batch_size=args.batch_size,
         keys_config=keys_config,
         world_size=world_size,
