@@ -68,7 +68,8 @@ from utils.create_dataloader import ParquetArrowDataLoader
 from einops import rearrange
 from modules.metric import CustomAUC, CustomCOPC, StreamingAUC, StreamingCOPC, MaskedAUC
 from dataclasses import dataclass
-from modules.MLP import MLP
+# from modules.MLP import MLP
+from modules.PReLU_DNN import MLP
 import time
 from datetime import datetime, timedelta
 from utils.common import jagged_to_padded_dense
@@ -226,6 +227,12 @@ def parse_args():
         default="./output",
         help="prediction output base directory",
     )
+    parser.add_argument(
+        "--save_every_days",
+        type=int,
+        default=5,
+        help="save model every N days",
+    )
 
     # --- Training Range ---
     parser.add_argument(
@@ -259,19 +266,22 @@ def parse_args():
 def get_sharder(args, optimizer_type):
     # set optimizer args
     learning_rate = args.lr_sparse
-    beta1 = 0.99
-    beta2 = 0.9999
-    weight_decay = 0
-    eps = 1e-8
+    # beta1 = 0.99
+    # beta2 = 0.9999
+    # weight_decay = 0
+    # eps = 1e-8
+
 
     # Put args into a optimizer kwargs , which is same usage of torchrec
     optimizer_kwargs = {
         "optimizer": optimizer_type,
         "learning_rate": learning_rate,
-        "beta1": beta1,
-        "beta2": beta2,
-        "weight_decay": weight_decay,
-        "eps": eps,
+        # "beta1": beta1,
+        # "beta2": beta2,
+        # "weight_decay": weight_decay,
+        # "eps": eps,
+        "eps": 1e-3,
+        "initial_accumulator_value": 0.1,
     }
 
     fused_params = {}
@@ -365,6 +375,15 @@ def get_planner(
             embedding_type_bytes * total_dim * emb_num_embeddings_next_power_of_2
         )
 
+        # debugging 存储相关信息的打印输出
+        if local_rank == 0:
+            print(f"Embedding table: {eb_config.name}"
+                f", num_embeddings: {emb_num_embeddings} -> {emb_num_embeddings_next_power_of_2}"
+                f", embedding_dim: {dim}"
+                f", total_dim (with optimizer states): {total_dim}"
+                f", total_hbm_need (bytes): {total_hbm_need}"
+            )
+
         # Setup admission strategy if threshold > 0
         admit_strategy = None
         admission_counter = None
@@ -452,7 +471,8 @@ def apply_dmp(model, args, training):
     """
     eb_configs = model.embedding_module.embedding_configs()
 
-    optimizer_type = EmbOptimType.ADAM
+    # optimizer_type = EmbOptimType.ADAM
+    optimizer_type = EmbOptimType.EXACT_ROWWISE_ADAGRAD
 
     """
     After configuring the `EmbeddingCollection`, you need to configure `DynamicEmbeddingCollectionSharder`. 
@@ -505,11 +525,24 @@ def apply_dmp(model, args, training):
     return dmp
 
 def get_embedding_configs(args):
+    # create EmbeddingConfig for each slot
+    # eb_configs = []
+    # for slot in args.ALL_SLOTS:
+    #     config = EmbeddingConfig(
+    #         name=f"sparse_table_slot_{slot}",
+    #         embedding_dim=args.embedding_dim,
+    #         # num_embeddings=args.num_embeddings_per_slot[slot],  # TODO: per slot num_embeddings
+    #         num_embeddings=args.num_embeddings,
+    #         feature_names=[str(slot)],
+    #         data_type=DataType.FP32,
+    #     )
+    #     eb_configs.append(config)
     eb_config = EmbeddingConfig(
             name="sparse_table",
             embedding_dim=args.embedding_dim,
             num_embeddings=args.num_embeddings,  # `num_embeddings` in `EmbeddingConfig` is the sum of all slices on all GPUs for a table.
-            feature_names=args.ALL_SLOTS,  # a list, means different features can share the same table
+            # feature_names=args.ALL_SLOTS,  # a list, means different features can share the same table
+            feature_names=[str(slot) for slot in args.ALL_SLOTS],  # a list, means different features can share the same table
             data_type=DataType.FP32,  # weight or embedding's data type.
     )
 
@@ -772,7 +805,7 @@ def train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metri
         
         # ---- loss ----
         if has_local:
-            current_interval_loss += loss.item()
+            current_interval_loss += loss.detach().item()
         # ---- metric ----
         with torch.no_grad():
             if has_local:
@@ -890,7 +923,7 @@ def test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epo
 
             # ---- loss and metrics ----
             if has_local:
-                test_loss += loss.item()
+                test_loss += loss.detach().item()
                 # update metric
                 auc_metric.update(predict_ctr, labels, valid=True)
                 copc_metric.update(predict_ctr, labels, valid=True)
@@ -901,7 +934,7 @@ def test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epo
 
             # ---- prdict output ----
             if has_local:
-                pctr = predict_ctr.detach().squeeze(-1).to('cpu', non_blocking=True)
+                pctr = predict_ctr.detach().to('cpu', non_blocking=True)
                 label = labels.detach().to('cpu', non_blocking=True)
 
                 # 逐行写；如果batch较大，也可以用join一次写完（更快）

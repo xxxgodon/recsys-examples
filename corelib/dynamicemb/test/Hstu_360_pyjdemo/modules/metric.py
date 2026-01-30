@@ -44,8 +44,8 @@ class MaskedAUC(Metric):
                 return
             valid = torch.ones_like(target, dtype=torch.bool)
 
-        preds = preds.squeeze()
-        target = target.squeeze()
+        preds = preds.flatten()
+        target = target.flatten()
 
         valid = valid.to(preds.device)
 
@@ -166,8 +166,8 @@ class StreamingCOPC(Metric):
                 return
             valid = torch.ones_like(target, dtype=torch.bool)
 
-        preds = preds.squeeze()
-        target = target.squeeze()
+        preds = preds.flatten()
+        target = target.flatten()
 
         valid = valid.to(preds.device)
 

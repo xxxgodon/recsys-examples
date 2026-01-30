@@ -10,15 +10,16 @@ class MLP(nn.Module):
     Args:
         in_size (int): Input dimension
         layer_sizes (List[int]): List of hidden layer sizes (including output layer)
-        activation (str): Activation function name ('relu', 'gelu', 'tanh', 'sigmoid')
+        activation (str): Activation function name ('relu', 'gelu', 'tanh', 'sigmoid', 'prelu')
         bias (bool): Whether to use bias in linear layers
         dropout (float): Dropout probability (0 means no dropout)
         last_activation: weather or not using activation in the last layer
+        init_method (str): Weight initialization method ('kaiming', 'glorot_uniform', 'glorot_normal')
         device (Optional[torch.device]): Device to place the model
         dtype (torch.dtype): Data type for parameters
     
     Example:
-        >>> mlp = MLP(in_size=128, layer_sizes=[256, 512, 10], activation='relu')
+        >>> mlp = MLP(in_size=128, layer_sizes=[256, 512, 10], activation='prelu', init_method='glorot_uniform')
         >>> x = torch.randn(32, 128)  # [batch_size, in_size]
         >>> output = mlp(x)  # [32, 10]
     """
@@ -27,10 +28,11 @@ class MLP(nn.Module):
         self,
         in_size: int,
         layer_sizes: List[int],
-        activation: str = "relu",
+        activation: str = "prelu",
         bias: bool = True,
         dropout: float = 0.0,
         last_activation: bool = False,
+        init_method: str = "glorot_uniform",
         device: Optional[torch.device] = None,
         dtype: torch.dtype = torch.float32,
     ) -> None:
@@ -44,6 +46,7 @@ class MLP(nn.Module):
             "sigmoid": nn.Sigmoid,
             "leaky_relu": nn.LeakyReLU,
             "silu": nn.SiLU,  # Swish
+            "prelu": nn.PReLU,  # 添加 PReLU
         }
         
         if activation.lower() not in activation_map:
@@ -53,6 +56,8 @@ class MLP(nn.Module):
             )
         
         activation_fn = activation_map[activation.lower()]
+        self.activation_name = activation.lower()
+        self.init_method = init_method
         
         # 构建层列表
         layers = []
@@ -75,7 +80,11 @@ class MLP(nn.Module):
             
             # 中间层总是加激活，最后一层根据参数决定
             if not is_last_layer or last_activation:
-                layers.append(activation_fn())
+                # 为激活函数指定device（特别是PReLU需要）
+                if self.activation_name == "prelu":
+                    layers.append(activation_fn().to(device=device, dtype=dtype))
+                else:
+                    layers.append(activation_fn())
                 if dropout > 0:
                     layers.append(nn.Dropout(p=dropout))
             
@@ -87,13 +96,36 @@ class MLP(nn.Module):
         self._init_weights()
     
     def _init_weights(self) -> None:
-        """Initialize weights using Xavier/Kaiming initialization"""
+        """Initialize weights using specified initialization method"""
         for module in self.modules():
             if isinstance(module, nn.Linear):
-                # Kaiming初始化（适合ReLU）
-                nn.init.kaiming_normal_(module.weight, mode='fan_in', nonlinearity='relu')
-                if module.bias is not None:
-                    nn.init.constant_(module.bias, 0)
+                if self.init_method == "glorot_uniform" or self.init_method == "xavier_uniform":
+                    # Glorot/Xavier Uniform 初始化
+                    nn.init.xavier_uniform_(module.weight)
+                    if module.bias is not None:
+                        nn.init.constant_(module.bias, 0)
+                
+                elif self.init_method == "glorot_normal" or self.init_method == "xavier_normal":
+                    # Glorot/Xavier Normal 初始化
+                    nn.init.xavier_normal_(module.weight)
+                    if module.bias is not None:
+                        nn.init.constant_(module.bias, 0)
+                
+                elif self.init_method == "kaiming":
+                    # Kaiming初始化（适合ReLU/PReLU）
+                    nn.init.kaiming_normal_(module.weight, mode='fan_in', nonlinearity='relu')
+                    if module.bias is not None:
+                        nn.init.constant_(module.bias, 0)
+                
+                else:
+                    raise ValueError(
+                        f"Initialization method '{self.init_method}' not supported. "
+                        f"Choose from ['kaiming', 'glorot_uniform', 'glorot_normal', 'xavier_uniform', 'xavier_normal']"
+                    )
+            
+            elif isinstance(module, nn.PReLU):
+                # PReLU 的参数初始化（默认为0.25）
+                nn.init.constant_(module.weight, 0.25)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -111,50 +143,63 @@ class MLP(nn.Module):
 # ============ 使用示例 ============
 
 if __name__ == "__main__":
-    # 示例1: 基本用法
-    mlp = MLP(
+    # 示例1: 使用 PReLU + Glorot Uniform 初始化
+    mlp_prelu = MLP(
         in_size=128,
-        layer_sizes=[256, 512, 10],  # 两个隐藏层 + 输出层
-        activation="relu",
+        layer_sizes=[256, 512, 10],
+        activation="prelu",
+        init_method="glorot_uniform",
         bias=True,
     )
     
-    x = torch.randn(32, 128)  # [batch_size, in_size]
-    output = mlp(x)
-    print(f"Input shape: {x.shape}")
-    print(f"Output shape: {output.shape}")  # [32, 10]
+    x = torch.randn(32, 128)
+    output = mlp_prelu(x)
+    print(f"PReLU + Glorot Uniform:")
+    print(f"  Input shape: {x.shape}")
+    print(f"  Output shape: {output.shape}")
     
-    # 示例2: 带Dropout
-    mlp_dropout = MLP(
+    # 示例2: 使用 PReLU + Kaiming 初始化
+    mlp_prelu_kaiming = MLP(
         in_size=64,
         layer_sizes=[128, 64, 32],
-        activation="gelu",
+        activation="prelu",
+        init_method="kaiming",
         dropout=0.1,
     )
     
-    # 示例3: 不同激活函数
-    mlp_tanh = MLP(
+    # 示例3: 使用 ReLU + Glorot Normal 初始化
+    mlp_glorot = MLP(
         in_size=100,
         layer_sizes=[50, 20],
-        activation="tanh",
+        activation="relu",
+        init_method="glorot_normal",
     )
     
-    # 示例4: GPU
+    # 示例4: GPU with PReLU
     if torch.cuda.is_available():
         mlp_gpu = MLP(
             in_size=256,
             layer_sizes=[512, 256, 128],
-            activation="relu",
+            activation="prelu",
+            init_method="glorot_uniform",
             device=torch.device("cuda"),
         )
         x_gpu = torch.randn(16, 256, device="cuda")
         output_gpu = mlp_gpu(x_gpu)
-        print(f"GPU output shape: {output_gpu.shape}")
+        print(f"\nGPU output shape: {output_gpu.shape}")
     
     # 查看模型结构
-    print("\n模型结构:")
-    print(mlp)
+    print("\n模型结构 (PReLU):")
+    print(mlp_prelu)
     
     # 查看参数数量
-    total_params = sum(p.numel() for p in mlp.parameters())
+    total_params = sum(p.numel() for p in mlp_prelu.parameters())
+    trainable_params = sum(p.numel() for p in mlp_prelu.parameters() if p.requires_grad)
     print(f"\n总参数数量: {total_params:,}")
+    print(f"可训练参数: {trainable_params:,}")
+    
+    # 检查 PReLU 参数
+    print("\nPReLU 参数值:")
+    for name, param in mlp_prelu.named_parameters():
+        if 'weight' in name and param.numel() == 1:  # PReLU 的可学习参数
+            print(f"  {name}: {param.item():.4f}")
