@@ -20,6 +20,9 @@ from dynamicemb import (
     DynamicEmbLoad,
     DynamicEmbScoreStrategy,
     DynamicEmbTableOptions,
+    DynamicEmbCheckMode,  # debugging pyj
+    FrequencyAdmissionStrategy,
+    KVCounter,
 )
 from dynamicemb.dynamicemb_config import data_type_to_dtype, get_optimizer_state_dim
 from dynamicemb.incremental_dump import get_score, incremental_dump
@@ -158,6 +161,13 @@ def parse_args():
     )
     parser.add_argument(
         "--seed", type=int, default=42, help="random seed used for initialization"
+    )
+    # torchrun --standalone --nproc_per_node=${NGPU} example.py --train "$@" --admission_threshold 5
+    parser.add_argument(
+        "--admission_threshold",
+        type=int,
+        default=0,
+        help="Frequency threshold for admission strategy (0 disable admission strategy, >0 enable admission strategy and only keys appearing >= threshold will be stored in tables)",
     )
     return parser.parse_args()
 
@@ -434,7 +444,9 @@ def get_sharder(args, optimizer_type):
 
 
 # use a function warp all the Planner code
-def get_planner(device, eb_configs, batch_size, optimizer_type, training, caching):
+def get_planner(
+    device, eb_configs, batch_size, optimizer_type, training, caching, args
+):
     DATA_TYPE_NUM_BITS: Dict[DataType, int] = {
         DataType.FP32: 32,
         DataType.FP16: 16,
@@ -474,6 +486,39 @@ def get_planner(device, eb_configs, batch_size, optimizer_type, training, cachin
             embedding_type_bytes * total_dim * emb_num_embeddings_next_power_of_2
         )
 
+        # debugging 存储相关信息的打印输出
+        if local_rank == 0:
+            print(f"Embedding table: {eb_config.name}"
+                f", num_embeddings: {emb_num_embeddings} -> {emb_num_embeddings_next_power_of_2}"
+                f", embedding_dim: {dim}"
+                f", total_dim (with optimizer states): {total_dim}"
+                f", total_hbm_need (bytes): {total_hbm_need}"
+        )
+
+        # Setup admission strategy if threshold > 0
+        admit_strategy = None
+        admission_counter = None
+        if args.admission_threshold > 0:
+            print(
+                f"Admission strategy enabled with threshold={args.admission_threshold}"
+            )
+            # Create counter to track key frequencies
+            admission_counter = KVCounter(
+                capacity=emb_num_embeddings_next_power_of_2,
+                bucket_capacity=bucket_capacity,
+                key_type=torch.int64,
+                device=device,
+            )
+
+            # Create admission strategy with threshold
+            admit_strategy = FrequencyAdmissionStrategy(
+                threshold=args.admission_threshold,
+                initializer_args=DynamicEmbInitializerArgs(
+                    mode=DynamicEmbInitializerMode.CONSTANT,
+                    value=0.0,  # Initialize rejected keys to 0
+                ),
+            )
+
         const = DynamicEmbParameterConstraints(
             sharding_types=[
                 ShardingType.ROW_WISE.value,  # dynamicemb embedding table only support to be sharded in row-wise.
@@ -483,12 +528,18 @@ def get_planner(device, eb_configs, batch_size, optimizer_type, training, cachin
                 global_hbm_for_values=total_hbm_need * cache_ratio
                 if caching
                 else total_hbm_need,
+                # debugging pyj
+                # safe_check_mode = DynamicEmbCheckMode.WARNING,
+                safe_check_mode = DynamicEmbCheckMode.ERROR,
                 initializer_args=DynamicEmbInitializerArgs(
                     mode=DynamicEmbInitializerMode.NORMAL
                 ),
-                score_strategy=DynamicEmbScoreStrategy.STEP,
+                # score_strategy=DynamicEmbScoreStrategy.STEP,
+                score_strategy=DynamicEmbScoreStrategy.LFU,
                 caching=caching,
                 training=training,
+                admit_strategy=admit_strategy,
+                admission_counter=admission_counter,
             ),
         )
 
@@ -561,6 +612,7 @@ def apply_dmp(model, args, training):
         optimizer_type=optimizer_type,
         training=training,
         caching=args.caching,
+        args=args,
     )
     # get plan for all ranks.
     # ShardingPlan is a dict, mapping table name to ParameterSharding/DynamicEmbParameterSharding.
@@ -668,13 +720,113 @@ def train_one_epoch(model, train_loader, optimizer, loss_fn, epoch, total_epochs
 
         total_loss += loss.item()
 
-        if batch_idx % 100 == 0:
+        if batch_idx % 1000 == 0:
             print(
                 f"Epoch {epoch+1}/{total_epochs}, Batch {batch_idx}/{len(train_loader)}, Loss: {loss.item():.4f}"
             )
+            
+            if local_rank == 0:
+                # debugging pyj
+                debug_embedding_stats(model)
 
     avg_loss = total_loss / len(train_loader)
     print(f"Epoch {epoch+1}/{total_epochs}, Average Loss: {avg_loss:.4f}")
+
+def debug_embedding_stats(model):
+    """打印 embedding 统计信息"""
+    print("[DEBUG] Embedding Table Stats:")
+    
+    for name, module in model.named_modules():
+        if 'ShardedDynamicEmbeddingCollection' in type(module).__name__:
+            if hasattr(module, '_lookups'):
+                for i, lookup in enumerate(module._lookups):
+                    if hasattr(lookup, '_emb_modules'):
+                        for j, emb_mod in enumerate(lookup._emb_modules):
+                            if hasattr(emb_mod, '_emb_module'):
+                                inner_module = emb_mod._emb_module
+                                # 查找 BatchedDynamicEmbeddingTablesV2
+                                if 'BatchedDynamicEmbeddingTablesV2' in type(inner_module).__name__:
+                                    module = inner_module
+                                    print(f"[DEBUG] Found BatchedDynamicEmbeddingTablesV2: {name}")
+                                    print(f"[DEBUG]   Table names: {module._table_names}")
+                                    
+                                    # 打印当前 scores (用于 eviction 策略)
+                                    if hasattr(module, '_scores'):
+                                        print(f"[DEBUG]   Current scores: {module._scores}")
+                                    
+                                    # 访问 _storages (KeyValueTable 或 DynamicEmbeddingTable)
+                                    if hasattr(module, '_storages'):
+                                        for i, (table_name, storage) in enumerate(zip(module._table_names, module._storages)):
+                                            print(f"[DEBUG]   Storage[{i}] {table_name}: {type(storage).__name__}")
+                                            
+                                            # 获取 table 大小
+                                            if hasattr(storage, 'size'):
+                                                try:
+                                                    size = storage.size()
+                                                    print(f"[DEBUG]     Current size (num keys): {size}")
+                                                except Exception as e:
+                                                    print(f"[DEBUG]     Error getting size: {e}")
+                                            
+                                            # 使用 export_keys_values 方法获取数据
+                                            if hasattr(storage, 'export_keys_values'):
+                                                try:
+                                                    device = torch.device(f"cuda:{module.device_id}")
+                                                    # 只获取少量数据用于调试
+                                                    for keys, embeddings, opt_states, scores in storage.export_keys_values(
+                                                        device=device, 
+                                                        batch_size=100
+                                                    ):
+                                                        print(f"[DEBUG]     Sample keys (first 10): {keys[:10].tolist()}")# 这个看起来像是 embedding 的 key
+                                                        print(f"[DEBUG]     Sample scores (first 10): {scores[:10].tolist()}")# 这个看起来像是优化器的状态
+                                                        print(f"[DEBUG]     Embeddings shape: {embeddings.shape}")# 这个看起来像是 embedding 向量
+                                                        print(f"[DEBUG]     Opt states shape: {opt_states.shape}")# 这个看起来像是优化器的状态
+                                                        # Score 统计
+                                                        if scores.numel() > 0:
+                                                            print(f"[DEBUG]     Score range: min={scores.min().item()}, max={scores.max().item()}")
+                                                        break  # 只打印第一批
+                                                except Exception as e:
+                                                    print(f"[DEBUG]     Error export_keys_values: {e}")
+                                    
+                                    # 访问 _admission_counter (用于 admission 策略)
+                                    if hasattr(module, '_admission_counter'):
+                                        for i, (table_name, counter) in enumerate(zip(module._table_names, module._admission_counter)):
+                                            if counter is not None:
+                                                print(f"[DEBUG]   Counter[{i}] {table_name}: {type(counter).__name__}")
+                                                
+                                                memory_usage = counter.memory_usage()
+                                                print(f"[DEBUG]     Counter memory usage (bytes): {memory_usage}")
+
+                                                # KVCounter 有 dump 方法，用于导出 keys 和 frequencies
+                                                # if hasattr(counter, 'dump'):
+                                                #     try:
+                                                #         import tempfile
+                                                #         import os as tmp_os
+                                                #         # 创建临时文件来 dump
+                                                #         tmp_key_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pt')
+                                                #         tmp_freq_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pt')
+                                                #         tmp_key_file.close()
+                                                #         tmp_freq_file.close()
+                                                        
+                                                #         counter.dump(tmp_key_file.name, tmp_freq_file.name)
+                                                        
+                                                #         # 读取 dump 的数据
+                                                #         counter_keys = torch.load(tmp_key_file.name, weights_only=False)
+                                                #         counter_freqs = torch.load(tmp_freq_file.name, weights_only=False)
+                                                        
+                                                #         print(f"[DEBUG]     Counter keys count: {counter_keys.numel()}")
+                                                #         if counter_keys.numel() > 0:
+                                                #             print(f"[DEBUG]     Counter sample keys (first 10): {counter_keys[:10].tolist()}")
+                                                #             print(f"[DEBUG]     Counter sample freqs (first 10): {counter_freqs[:10].tolist()}")
+                                                #             # 统计频率分布
+                                                #             print(f"[DEBUG]     Freq range: min={counter_freqs.min().item()}, max={counter_freqs.max().item()}, mean={counter_freqs.float().mean().item():.2f}")
+                                                        
+                                                #         # 清理临时文件
+                                                #         tmp_os.unlink(tmp_key_file.name)
+                                                #         tmp_os.unlink(tmp_freq_file.name)
+                                                #     except Exception as e:
+                                                #         print(f"[DEBUG]     Error dumping counter: {e}")
+                                            else:
+                                                print(f"[DEBUG]   Counter[{i}] {table_name}: None (no admission strategy)")
 
 
 def test_one_epoch(model, test_loader, loss_fn, epoch, total_epochs):
