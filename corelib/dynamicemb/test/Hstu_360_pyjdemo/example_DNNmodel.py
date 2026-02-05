@@ -584,7 +584,7 @@ class DNNModel(nn.Module):
             embedding_pooling(
                 embeddings[key].values(), 
                 embeddings[key].offsets(), 
-                "mean"
+                "sum"
             ) 
             for key in self._POOLING_SLOTS
         ]  # list:[tensor([batch_size, embedding_dim])]

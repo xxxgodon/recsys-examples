@@ -11,12 +11,12 @@ class TransformerBlock(nn.Module):
     
     def __init__(
         self,
-        embedding_dim: int = 8,
+        embedding_dim: int = 128,
         num_heads: int = 2,
         num_layers: int = 2,
         dropout: float = 0,
-        ff_dim: int = 32,
-        max_seq_length: int = 50,
+        ff_dim: int = 256,
+        max_seq_length: int = 512,
     ):
         """
         Args:

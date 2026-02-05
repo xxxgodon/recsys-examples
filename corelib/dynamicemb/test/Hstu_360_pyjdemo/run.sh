@@ -1,22 +1,155 @@
-# #!/bin/bash
-# NGPU=1
-# torchrun --standalone --nproc_per_node=${NGPU} pyj_test_example.py --train "$@"
-
-
 #!/bin/bash
+# -*- coding: utf-8 -*-
 
 NGPU=2
-export CUDA_VISIBLE_DEVICES=1,2
+export CUDA_VISIBLE_DEVICES=2,3
 
-# 定义数据路径
-# TRAIN_DATA="./train/2025-12-21/part-00000"
-TRAIN_DATA="./train/2025-12-21"
-TEST_DATA="./train/2025-12-21/part-00001"
+# 这里按照日期读进来数据 所以不需要训练路径
+# TRAIN_DATA="./dataset/parquet_data/2025-12-21"
+# 训练过程中不进行测试 所以不需要测试路径
 
-# 运行命令
-# 注意：${SLOTS} 不要加引号，以便让 python 识别为多个参数
-torchrun --standalone --nproc_per_node=${NGPU} pyj_test_example.py \
-    --train \
-    --Train_data_path "${TRAIN_DATA}" \
-    --Test_data_path "${TEST_DATA}" \
+
+运行命令
+torchrun --standalone --nproc_per_node=${NGPU} gr_example.py \
+    --train_days \
+    --date_start "2025-09-01" \
+    --date_end "2025-09-28" \
+    --epochs 1 \
+    --batch_size 1024 \
+    --token_dim 128 \
+    --dim_feedforward 256 \
+    --dropout 0 \
+    --log_interval 1000 \
+    --num_embeddings 600000000 \
+    "$@"
+
+torchrun --standalone --nproc_per_node=${NGPU} gr_example.py \
+    --test \
+    --date_start "2025-09-29" \
+    --date_end "2025-09-29" \
+    --epochs 1 \
+    --batch_size 1024 \
+    --token_dim 128 \
+    --dim_feedforward 256 \
+    --dropout 0 \
+    --log_interval 1000 \
+    --num_embeddings 600000000 \
+    "$@"
+
+torchrun --standalone --nproc_per_node=${NGPU} gr_example.py \
+    --test \
+    --date_start "2025-09-26" \
+    --date_end "2025-09-26" \
+    --epochs 1 \
+    --batch_size 1024 \
+    --token_dim 128 \
+    --dim_feedforward 256 \
+    --dropout 0 \
+    --log_interval 1000 \
+    --num_embeddings 600000000 \
+    "$@"
+
+torchrun --standalone --nproc_per_node=${NGPU} gr_example.py \
+    --test \
+    --date_start "2025-09-21" \
+    --date_end "2025-09-21" \
+    --epochs 1 \
+    --batch_size 1024 \
+    --token_dim 128 \
+    --dim_feedforward 256 \
+    --dropout 0 \
+    --log_interval 1000 \
+    --num_embeddings 600000000 \
+    "$@"
+
+torchrun --standalone --nproc_per_node=${NGPU} gr_example.py \
+    --test \
+    --date_start "2025-09-16" \
+    --date_end "2025-09-16" \
+    --epochs 1 \
+    --batch_size 1024 \
+    --token_dim 128 \
+    --dim_feedforward 256 \
+    --dropout 0 \
+    --log_interval 1000 \
+    --num_embeddings 600000000 \
+    "$@"
+
+torchrun --standalone --nproc_per_node=${NGPU} gr_example.py \
+    --test \
+    --date_start "2025-09-11" \
+    --date_end "2025-09-11" \
+    --epochs 1 \
+    --batch_size 1024 \
+    --token_dim 128 \
+    --dim_feedforward 256 \
+    --dropout 0 \
+    --log_interval 1000 \
+    --num_embeddings 600000000 \
+    "$@"
+
+torchrun --standalone --nproc_per_node=${NGPU} gr_example.py \
+    --test \
+    --date_start "2025-09-06" \
+    --date_end "2025-09-06" \
+    --epochs 1 \
+    --batch_size 1024 \
+    --token_dim 128 \
+    --dim_feedforward 256 \
+    --dropout 0 \
+    --log_interval 1000 \
+    --num_embeddings 600000000 \
+    "$@"
+
+torchrun --standalone --nproc_per_node=${NGPU} gr_example.py \
+    --train_days \
+    --date_start "2025-09-29" \
+    --date_end "2025-10-01" \
+    --epochs 1 \
+    --batch_size 1024 \
+    --token_dim 128 \
+    --dim_feedforward 256 \
+    --dropout 0 \
+    --log_interval 1000 \
+    --num_embeddings 600000000 \
+    --save_every_days 1 \
+    "$@"
+
+torchrun --standalone --nproc_per_node=${NGPU} gr_example.py \
+    --test \
+    --date_start "2025-09-30" \
+    --date_end "2025-09-30" \
+    --epochs 1 \
+    --batch_size 1024 \
+    --token_dim 128 \
+    --dim_feedforward 256 \
+    --dropout 0 \
+    --log_interval 1000 \
+    --num_embeddings 600000000 \
+    "$@"
+
+torchrun --standalone --nproc_per_node=${NGPU} gr_example.py \
+    --test \
+    --date_start "2025-10-01" \
+    --date_end "2025-10-01" \
+    --epochs 1 \
+    --batch_size 1024 \
+    --token_dim 128 \
+    --dim_feedforward 256 \
+    --dropout 0 \
+    --log_interval 1000 \
+    --num_embeddings 600000000 \
+    "$@"
+
+torchrun --standalone --nproc_per_node=${NGPU} gr_example.py \
+    --test \
+    --date_start "2025-10-02" \
+    --date_end "2025-10-02" \
+    --epochs 1 \
+    --batch_size 1024 \
+    --token_dim 128 \
+    --dim_feedforward 256 \
+    --dropout 0 \
+    --log_interval 1000 \
+    --num_embeddings 600000000 \
     "$@"

@@ -727,7 +727,10 @@ def train_one_epoch(model, train_loader, optimizer, loss_fn, epoch, total_epochs
             
             if local_rank == 0:
                 # debugging pyj
-                debug_embedding_stats(model)
+                # from embedding_debug import debug_embedding_stats, EmbeddingStatsCollector
+                # debug_embedding_stats(model)
+                # 遍历所有数据
+                stats = debug_embedding_stats(model)
 
     avg_loss = total_loss / len(train_loader)
     print(f"Epoch {epoch+1}/{total_epochs}, Average Loss: {avg_loss:.4f}")
