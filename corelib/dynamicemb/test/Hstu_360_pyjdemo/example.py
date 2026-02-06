@@ -189,7 +189,7 @@ def parse_args():
     parser.add_argument(
         "--output_mlp_dims",
         type=List[int],
-        default=[256, 128],
+        default=[128],
         help="dimension of output MLP layer, with type List[int]",
     )
 
@@ -689,12 +689,12 @@ class preprocessor(nn.Module):
         self._SEQ_SLOTS = SEQ_SLOTS
         self._sequence_mlp = SlotMLP(
             input_dim=total_sequence_dim,
-            hidden_dims=[512, 256],
+            hidden_dims=[256, 128],
             output_dim=token_dim
         )
         self._candidate_mlp = SlotMLP(
             input_dim=total_candidate_features_dim,
-            hidden_dims=[512, 256],
+            hidden_dims=[512, 256, 256],
             output_dim=token_dim
         )
 
@@ -724,7 +724,7 @@ class preprocessor(nn.Module):
         )  # [B, L, token_dim]
 
         # ---- candidate ----
-        pooled_candidate_values = [embedding_pooling(embeddings[key].values(), embeddings[key].offsets(), "mean") for key in self._POOLING_SLOTS]  # list:[candidate_slot_num, tensor([batch_size, embedding_dim])]
+        pooled_candidate_values = [embedding_pooling(embeddings[key].values(), embeddings[key].offsets(), "sum") for key in self._POOLING_SLOTS]  # list:[candidate_slot_num, tensor([batch_size, embedding_dim])]
         concatenated_candidate_features = torch.cat(pooled_candidate_values, dim=-1)  # [batch_size, candidate_slot_num * embedding_dim]
 
         candidate_tokens = self._candidate_mlp(concatenated_candidate_features)       # [batch_size, token_dim]
