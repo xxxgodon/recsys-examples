@@ -644,6 +644,7 @@ class TransformerModel(nn.Module):
             self.total_sequence_dim,
             self.total_candidate_dim,
             self.token_dim,
+            args,
         )
         
         self._transformer_module = TransformerBlock(
@@ -773,6 +774,7 @@ class preprocessor(nn.Module):
         total_sequence_dim,
         total_candidate_dim,
         token_dim,
+        args,
         # is_inference: bool,
     ):
         super().__init__()
