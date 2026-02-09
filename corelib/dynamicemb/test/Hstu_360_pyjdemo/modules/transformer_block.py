@@ -50,6 +50,22 @@ class TransformerBlock(nn.Module):
             num_layers=num_layers
         )
         
+        # 自定义初始化
+        self._init_weights()
+
+    def _init_weights(self):
+        for name, param in self.named_parameters():
+            if 'pe' in name:
+                # 位置编码是固定的，跳过
+                continue
+            if param.dim() >= 2:
+                # Linear 层的 weight: Xavier Uniform
+                nn.init.xavier_uniform_(param)
+            elif 'bias' in name:
+                nn.init.zeros_(param)
+            elif 'norm' in name:
+                # LayerNorm 的 weight 初始化为 1
+                nn.init.ones_(param)
         
     def forward(
         self, 
@@ -79,7 +95,7 @@ class TransformerBlock(nn.Module):
         # Apply transformer encoder
         output = self.transformer_encoder(
             x, 
-            mask=mask,
+            mask=None,  #
             src_key_padding_mask=src_key_padding_mask
         )
         
