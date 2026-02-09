@@ -54,7 +54,6 @@ class TransformerBlock(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
-        print("Initializing TransformerBlock weights using custom scheme...")
         for name, param in self.named_parameters():
             if 'pe' in name:
                 # 位置编码是固定的，跳过

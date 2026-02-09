@@ -146,15 +146,16 @@ def parse_args():
         "--ALL_SLOTS",
         type=List[int],
         # default=['0', '73', '1801'],
-        default=['0', '2', '12', '13', '14', '15','20', '66', '67', '68', '69', '70', '92', '501', '502', '503', '504', '505', '506', '507', '510', '511', '514', '515', '516', '517', '518', '520', '521', '522', '523', '524', '525', '527', '528', '529', '532', '533', '534', '535', '536', '537', '538', '540', '541', '547', '548', '560', '561', '562', '800', '801', '802', '803', '814', '815', '816', '817', '818', '819', '825', '826', '914', '917', '921', '939', '942', '967', '1041', '1044', '1047', '1059', '1062', '1109', '1110', '1501', '1506', '1810', '1811', '1812', '1813', '1814', '1815', '1816', '1817', '1818', '1819', '19'],
+        default=['0', '2', '12', '13', '14', '15','20', '66', '67', '68', '69', '70', '92', '501', '502', '503', '504', '505', '506', '507', '510', '511', '514', '515', '516', '517', '518', '520', '521', '522', '523', '524', '525', '527', '528', '529', '532', '533', '534', '535', '536', '537', '538', '540', '541', '547', '548', '560', '561', '562', '800', '801', '802', '803', '814', '815', '816', '817', '818', '819', '825', '826', '914', '917', '921', '939', '942', '967', '1041', '1044', '1047', '1059', '1062', '1109', '1110', '1501', '1506', 
+        '1800', '1801', '1802', '1803', '1804', '1805', '1806', '1807', '1810', '1811', '1812', '1813', '1814', '1815', '1816', '1817', '1818', '1819', '19'],
         help="all input slots",
     )
     parser.add_argument(
         "--CANDIDATE_SLOTS",
         type=List[int],
         # default=['0', '73'],
-        default=['0'],
-        # default=['0', '2', '12', '13', '14', '15','20', '66', '67', '68', '69', '70', '92', '501', '502', '503', '504', '505', '506', '507', '510', '511', '514', '515', '516', '517', '518', '520', '521', '522', '523', '524', '525', '527', '528', '529', '532', '533', '534', '535', '536', '537', '538', '540', '541', '547', '548', '560', '561', '562', '800', '801', '802', '803', '814', '815', '816', '817', '818', '819', '825', '826', '914', '917', '921', '939', '942', '967', '1041', '1044', '1047', '1059', '1062', '1109', '1110', '1501', '1506', '1810'],
+        # default=['0'],
+        default=['0', '2', '12', '13', '14', '15', '69', '70', '92', '501', '502', '503', '504', '507', '511', '514', '515', '516', '517', '518', '520', '521', '522', '523', '524', '525', '527', '528', '529', '532', '533', '534', '535', '536', '537', '538', '540', '541', '547', '548', '560', '561', '562', '800', '801', '802', '803', '814', '815', '816', '817', '818', '819', '825', '826', '914', '917', '921', '939', '942', '967', '1041', '1044', '1047', '1059', '1062', '1109', '1110', '1506', '1810'],
         help="slots used for candidate features",
     )
     parser.add_argument(
@@ -172,8 +173,15 @@ def parse_args():
     parser.add_argument(
         "--PROFILE_SLOTS",
         type=List[int],
-        default=['66'],  # TODO: 修改为真正的对应slot id
+        # default=['65','66', '506', '1800', '1801', '1802', '1803', '1804', '1805', '1806', '1807'],
+        default=['1501', '66', '506', '1800', '1801', '1802', '1803', '1804', '1805', '1806', '1807'],
         help="slots used for profile features",
+    )
+    parser.add_argument(
+        "--CONTEXT_SLOTS",
+        type=List[int],
+        default=['67', '68', '510', '20', '505'],
+        help="slots used for context features",
     )
     parser.add_argument(
         "--embedding_dim", type=int, default=8, help="embedding dimension"
@@ -182,16 +190,22 @@ def parse_args():
         "--num_embeddings", type=int, default=10000000, help="number of embeddings"
     )
     parser.add_argument(
-        "--profile_embedding_dim", type=int, default=8, help="profile embedding dimension"
+        "--profile_embedding_dim", type=int, default=8, help="profile embedding dimension"#TODO: modify
     )
     parser.add_argument(
-        "--profile_embedding_num", type=int, default=10000000, help="number of profile embeddings"
+        "--profile_embedding_num", type=int, default=10000000, help="number of profile embeddings"#TODO: modify
     )
     parser.add_argument(
         "--sequence_embedding_dim", type=int, default=64, help="sequence embedding dimension"
     )
     parser.add_argument(
         "--sequence_embedding_num", type=int, default=10000000, help="number of sequence embeddings"
+    )
+    parser.add_argument(
+        "--context_embedding_dim", type=int, default=8, help="context embedding dimension"#TODO: modify
+    )
+    parser.add_argument(
+        "--context_embedding_num", type=int, default=10000000, help="number of context embeddings"#TODO: modify
     )
     parser.add_argument(
         "--candidate_embedding_dim", type=int, default=6, help="candidate embedding dimension"
@@ -207,8 +221,9 @@ def parse_args():
     )
 
     # --- Transformer / HSTU Architecture ---
-    parser.add_argument("--_profile_mlp_dims", type=List[int], default=[512], help="dimension of profile MLP layer, with type List[int]")
-    parser.add_argument("--_sequence_mlp_dims", type=List[int], default=[512], help="dimension of sequence MLP layer, with type List[int]")
+    parser.add_argument("--_profile_mlp_dims", type=List[int], default=[64], help="dimension of profile MLP layer, with type List[int]")
+    parser.add_argument("--_sequence_mlp_dims", type=List[int], default=[64], help="dimension of sequence MLP layer, with type List[int]")
+    parser.add_argument("--_context_mlp_dims", type=List[int], default=[64], help="dimension of context MLP layer, with type List[int]")
     parser.add_argument("--_candidate_mlp_dims", type=List[int], default=[512], help="dimension of candidate MLP layer, with type List[int]")
     parser.add_argument("--token_dim", type=int, default=512, help="Dimension of token embeddings")
     parser.add_argument("--num_attention_heads", type=int, default=2, help="Number of attention heads in Transformer")
@@ -584,6 +599,14 @@ def get_embedding_configs(args):
         data_type=DataType.FP32,
     )
 
+    eb_config_context = EmbeddingConfig(
+        name="context_slots",
+        embedding_dim=args.context_embedding_dim,
+        num_embeddings=args.context_embedding_num,
+        feature_names=[str(slot) for slot in args.CONTEXT_SLOTS],
+        data_type=DataType.FP32,
+    )
+
     eb_config_candidate = EmbeddingConfig(
         name="candidate_slots",
         embedding_dim=args.candidate_embedding_dim,
@@ -601,7 +624,7 @@ def get_embedding_configs(args):
         data_type=DataType.FP32,
     )
 
-    eb_configs = [eb_config_prof, eb_config_seq, eb_config_candidate, eb_config_pos]
+    eb_configs = [eb_config_prof, eb_config_seq, eb_config_context, eb_config_candidate, eb_config_pos]
     
     return eb_configs
 
@@ -618,30 +641,34 @@ class TransformerModel(nn.Module):
         args,
     ):
         super().__init__()
-        self._CANDIDATE_SLOTS = args.CANDIDATE_SLOTS
-        self._SEQ_SLOTS = args.SEQ_SLOTS
         self._PROFILE_SLOTS = args.PROFILE_SLOTS
+        self._SEQ_SLOTS = args.SEQ_SLOTS
+        self._CONTEXT_SLOTS = args.CONTEXT_SLOTS
+        self._CANDIDATE_SLOTS = args.CANDIDATE_SLOTS
         self.POS_SLOT = args.POS_SLOT
         self.token_dim = args.token_dim
         
         # self.embedding_configs = get_embedding_configs(args)
         self.embedding_configs = get_embedding_configs(args)
-        self.profile_embedding_config, self.sequence_embedding_config, self.candidate_embedding_config, self.pos_embedding_config = self.embedding_configs
+        self.profile_embedding_config, self.sequence_embedding_config, self.context_embedding_config, self.candidate_embedding_config, self.pos_embedding_config = self.embedding_configs
         # self.embedding_module = get_embedding_module(self.embedding_configs)
         self.profile_embedding_module = get_embedding_module([self.profile_embedding_config])
         self.sequence_embedding_module = get_embedding_module([self.sequence_embedding_config])
+        self.context_embedding_module = get_embedding_module([self.context_embedding_config])
         self.candidate_embedding_module = get_embedding_module([self.candidate_embedding_config])
         self.pos_embedding_module = get_embedding_module([self.pos_embedding_config])
         
-        _, self.total_profile_dim, self.total_candidate_dim, self.total_sequence_dim = self._initialize_embedding_dimensions()
+        _, self.total_profile_dim, self.total_sequence_dim, self.total_context_dim, self.total_candidate_dim = self._initialize_embedding_dimensions()
 
         self._preprocess = preprocessor(
             args.batch_size,
             self._PROFILE_SLOTS,
             self._SEQ_SLOTS,
+            self._CONTEXT_SLOTS,
             self._CANDIDATE_SLOTS, 
             self.total_profile_dim,
             self.total_sequence_dim,
+            self.total_context_dim,
             self.total_candidate_dim,
             self.token_dim,
             args,
@@ -685,6 +712,7 @@ class TransformerModel(nn.Module):
         # print("[Debugging] profile_embeddings keys:", profile_embeddings.keys())
         # print("[Debugging] profile_embeddings:", profile_embeddings['66'])
         sequence_embeddings: Dict[str, JaggedTensor] = self.sequence_embedding_module(kjt)
+        context_embeddings: Dict[str, JaggedTensor] = self.context_embedding_module(kjt)
         candidate_embeddings: Dict[str, JaggedTensor] = self.candidate_embedding_module(kjt)
         pos_embedding: JaggedTensor = self.pos_embedding_module(kjt)
         # embeddings: Dict[str, JaggedTensor] = self.embedding_module(kjt)
@@ -693,6 +721,7 @@ class TransformerModel(nn.Module):
         input_tokens, padding_mask = self._preprocess(
             profile_embeddings,
             sequence_embeddings,
+            context_embeddings,
             candidate_embeddings,
         )
 
@@ -744,10 +773,9 @@ class TransformerModel(nn.Module):
             for feature_name in config.feature_names:
                 slot_to_dim[feature_name] = config.embedding_dim
         
-        # 计算候选特征的总维度
-        total_candidate_dim = sum(
-            slot_to_dim[slot] 
-            for slot in self._CANDIDATE_SLOTS
+        total_profile_dim = sum(
+            slot_to_dim[slot]
+            for slot in self._PROFILE_SLOTS
         )
 
         total_sequence_dim = sum(
@@ -755,12 +783,17 @@ class TransformerModel(nn.Module):
             for slot in self._SEQ_SLOTS
         )
 
-        total_profile_dim = sum(
+        total_context_dim = sum(
             slot_to_dim[slot]
-            for slot in self._PROFILE_SLOTS
+            for slot in self._CONTEXT_SLOTS
+        )
+
+        total_candidate_dim = sum(
+            slot_to_dim[slot] 
+            for slot in self._CANDIDATE_SLOTS
         )
         
-        return slot_to_dim, total_profile_dim, total_candidate_dim, total_sequence_dim
+        return slot_to_dim, total_profile_dim, total_sequence_dim, total_context_dim, total_candidate_dim
 
 
 class preprocessor(nn.Module):
@@ -769,9 +802,11 @@ class preprocessor(nn.Module):
         batch_size,
         PROFILE_SLOTS,
         SEQ_SLOTS,
+        CONTEXT_SLOTS,
         CANDIDATE_SLOTS,
         total_profile_dim,
         total_sequence_dim,
+        total_context_dim,
         total_candidate_dim,
         token_dim,
         args,
@@ -782,6 +817,7 @@ class preprocessor(nn.Module):
         self.batch_size = batch_size
         self._PROFILE_SLOTS = PROFILE_SLOTS
         self._SEQ_SLOTS = SEQ_SLOTS
+        self._CONTEXT_SLOTS = CONTEXT_SLOTS
         self._CANDIDATE_SLOTS = CANDIDATE_SLOTS
 
         # TODO
@@ -812,6 +848,12 @@ class preprocessor(nn.Module):
             hidden_dims=args._sequence_mlp_dims,
             output_dim=token_dim
         )
+        self._context_mlp = SlotMLP(
+            input_dim=total_context_dim,
+            # hidden_dims=[512],
+            hidden_dims=args._context_mlp_dims,
+            output_dim=token_dim
+        )
         self._candidate_mlp = SlotMLP(
             input_dim=total_candidate_dim,
             # hidden_dims=[512],
@@ -824,14 +866,12 @@ class preprocessor(nn.Module):
         # embeddings: Dict[str, JaggedTensor],
         profile_embeddings: Dict[str, JaggedTensor],
         sequence_embeddings: Dict[str, JaggedTensor],
+        context_embeddings: Dict[str, JaggedTensor],
         candidate_embeddings: Dict[str, JaggedTensor],
     ):
         # ---- profile ----
-        # TODO:这里先假设都是单值特征
-        concatenated_profile_features = torch.cat(
-            [profile_embeddings[key].values() for key in profile_embeddings.keys() if key in self._PROFILE_SLOTS], 
-            dim=-1
-        )  # [batch_size, profile_slot_num * embedding_dim]
+        pooled_profile_values = [embedding_pooling(profile_embeddings[key].values(), profile_embeddings[key].offsets(), "sum") for key in self._PROFILE_SLOTS]  # list:[profile_slot_num, tensor([batch_size, embedding_dim])]
+        concatenated_profile_features = torch.cat(pooled_profile_values, dim=-1)  # [batch_size, profile_slot_num * embedding_dim]
         profile_tokens = self._profile_mlp(concatenated_profile_features)  # [batch_size, token_dim]
         profile_tokens = profile_tokens.unsqueeze(1)                      # [batch_size, 1, token_dim]
 
@@ -861,6 +901,12 @@ class preprocessor(nn.Module):
             0.0                             # padding value
         )  # [B, L, token_dim]
 
+        # ---- context ----
+        pooled_context_values = [embedding_pooling(context_embeddings[key].values(), context_embeddings[key].offsets(), "sum") for key in self._CONTEXT_SLOTS]  # list:[context_slot_num, tensor([batch_size, embedding_dim])]
+        concatenated_context_features = torch.cat(pooled_context_values, dim=-1)  # [batch_size, context_slot_num * embedding_dim]
+        context_tokens = self._context_mlp(concatenated_context_features)  # [batch_size, token_dim]
+        context_tokens = context_tokens.unsqueeze(1)                              # [batch_size, 1, token_dim]
+
         # ---- candidate ----
         pooled_candidate_values = [embedding_pooling(candidate_embeddings[key].values(), candidate_embeddings[key].offsets(), "sum") for key in self._CANDIDATE_SLOTS]  # list:[candidate_slot_num, tensor([batch_size, embedding_dim])]
         concatenated_candidate_features = torch.cat(pooled_candidate_values, dim=-1)  # [batch_size, candidate_slot_num * embedding_dim]
@@ -868,11 +914,12 @@ class preprocessor(nn.Module):
         candidate_tokens = self._candidate_mlp(concatenated_candidate_features)       # [batch_size, token_dim]
         candidate_tokens = candidate_tokens.unsqueeze(1)                              # [batch_size, 1, token_dim]
 
-        input_tokens = torch.cat([profile_tokens, sequences_tokens, candidate_tokens], dim=1)         # [batch_size, L+1, token_dim]
+        # ---- input tokens ----
+        input_tokens = torch.cat([profile_tokens, sequences_tokens, context_tokens, candidate_tokens], dim=1)         # [batch_size, L+1, token_dim]
 
         # ---- padding mask ----
         # profile mask: 始终有效 (True)
-        L_profile = profile_tokens.shape[1]  # 1
+        L_profile = profile_tokens.shape[1]
         profile_mask = torch.ones(
             B, L_profile, 
             dtype=torch.bool, 
@@ -882,12 +929,20 @@ class preprocessor(nn.Module):
             max_seq_len, 
             device=sequences_tokens.device
         )[None, :] < sequence_embeddings_lengths[:, None]
+        # context mask: 始终有效 (True)
+        L_context = context_tokens.shape[1]
+        context_mask = torch.ones(
+            B, L_context, 
+            dtype=torch.bool, 
+            device=input_tokens.device
+        )  # [B, L_context]
         candidate_mask = torch.ones(  # [batch_size, 1]
             B, 1, 
             dtype=torch.bool, 
             device=input_tokens.device
         )
-        padding_mask = torch.cat([profile_mask, padding_mask, candidate_mask], dim=1)  # [batch_size, L+1]
+        # 拼接
+        padding_mask = torch.cat([profile_mask, padding_mask, context_mask, candidate_mask], dim=1)  # [batch_size, L+1]
 
         return  input_tokens, padding_mask
 
@@ -1391,7 +1446,8 @@ def train_days(args):
 
 
         train_dataloader = ParquetArrowDataLoader(
-            data_dir=f"../../zzzc_5T/GR/dataset/parquet_data/{cur_str}",   # /data/pangyongjie/wjg_clouds/GR/dataset/parquet_data
+            data_dir=f"/data/pangyongjie/wjg_clouds/GR/dataset/parquet_data/{cur_str}",   # /data/pangyongjie/wjg_clouds/GR/dataset/parquet_data
+            # data_dir=f"../../zzzc_5T/GR/dataset/parquet_data/{cur_str}",   # /data/pangyongjie/wjg_clouds/GR/dataset/parquet_data
             # data_dir=args.Train_data_path,
             # data_dir=f"/data/pangyongjie/clouds/GR/dataset/parquet_data/{cur_str}",
             batch_size=args.batch_size,
@@ -1512,7 +1568,8 @@ def test(args):
     # cur_path = os.path.join(args.model_save_dir, cur_str)
         
     test_dataloader = ParquetArrowDataLoader(
-        data_dir=f"../../zzzc_5T/GR/dataset/parquet_data/{cur_str}",   # /data/pangyongjie/wjg_clouds/GR/dataset/parquet_data
+        data_dir=f"/data/pangyongjie/wjg_clouds/GR/dataset/parquet_data/{cur_str}",   # /data/pangyongjie/wjg_clouds/GR/dataset/parquet_data
+        # data_dir=f"../../zzzc_5T/GR/dataset/parquet_data/{cur_str}",   # /data/pangyongjie/wjg_clouds/GR/dataset/parquet_data
         # data_dir=args.Test_data_path,
         # data_dir=f"/data/pangyongjie/clouds/GR/dataset/parquet_data/{cur_str}",
         batch_size=args.batch_size,
