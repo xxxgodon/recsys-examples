@@ -1150,7 +1150,7 @@ def train(args):
 	# )
 
     # 创建模型
-    model = create_model(args, device)
+    model = create_model(args)
 
     dense_optimizer = Adam(
         model.parameters(), 
@@ -1199,7 +1199,7 @@ def train_days(args):
     keys_config["label"] = "label"
 
 
-    model = create_model(args, device)
+    model = create_model(args)
 
     dense_optimizer = Adam(
         model.parameters(), 
@@ -1325,7 +1325,7 @@ def test(args):
 
 
     # 创建模型
-    model = create_model(args, device)
+    model = create_model(args, training=False)
 
     dense_optimizer = Adam(
         model.parameters(), 
