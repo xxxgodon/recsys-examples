@@ -151,6 +151,12 @@ def parse_args():
         help="all input slots",
     )
     parser.add_argument(
+        "--TPA_SLOTS",
+        type=List[int],
+        default=['1811', '1812', '1814'],
+        help="time, position, action slots sum pooling for sequence features",
+    )
+    parser.add_argument(
         "--CANDIDATE_SLOTS",
         type=List[int],
         # default=['0', '73'],
@@ -161,7 +167,7 @@ def parse_args():
     parser.add_argument(
         "--SEQ_SLOTS",
         type=List[int],
-        default=['1811', '1812', '1813', '1814', '1815', '1816', '1817', '1818', '1819'],
+        default=['1813', '1815', '1816', '1817', '1818', '1819'],
         help="sequence input slots",
     )
     parser.add_argument(
@@ -188,6 +194,12 @@ def parse_args():
     )
     parser.add_argument(
         "--num_embeddings", type=int, default=300000000, help="number of embeddings"
+    )
+    parser.add_argument(
+        "--tpa_embedding_dim", type=int, default=64, help="embedding dimension for time, position, action features"
+    )
+    parser.add_argument(
+        "--tpa_embedding_num", type=int, default=100000, help="number of embeddings for time, position, action features"
     )
     parser.add_argument(
         "--profile_embedding_dim", type=int, default=8, help="profile embedding dimension"#TODO: modify
@@ -590,7 +602,14 @@ def get_embedding_configs(args):
     # )
     # eb_configs = [eb_config]
 
-    # 分别为序列特征和候选特征创建EmbeddingConfig
+    eb_config_tpa = EmbeddingConfig(
+        name="tpa_slots",
+        embedding_dim=args.tpa_embedding_dim,
+        num_embeddings=args.tpa_embedding_num,
+        feature_names=[str(slot) for slot in args.TPA_SLOTS],
+        data_type=DataType.FP32,
+    )
+    
     eb_config_prof = EmbeddingConfig(
         name="profile_slots",
         embedding_dim=args.profile_embedding_dim,
@@ -632,7 +651,7 @@ def get_embedding_configs(args):
         data_type=DataType.FP32,
     )
 
-    eb_configs = [eb_config_prof, eb_config_seq, eb_config_context, eb_config_candidate, eb_config_pos]
+    eb_configs = [eb_config_tpa, eb_config_prof, eb_config_seq, eb_config_context, eb_config_candidate, eb_config_pos]
     
     return eb_configs
 
@@ -659,8 +678,9 @@ class TransformerModel(nn.Module):
         
         # self.embedding_configs = get_embedding_configs(args)
         self.embedding_configs = get_embedding_configs(args)
-        self.profile_embedding_config, self.sequence_embedding_config, self.context_embedding_config, self.candidate_embedding_config, self.pos_embedding_config = self.embedding_configs
+        self.tpa_embedding_config, self.profile_embedding_config, self.sequence_embedding_config, self.context_embedding_config, self.candidate_embedding_config, self.pos_embedding_config = self.embedding_configs
         # self.embedding_module = get_embedding_module(self.embedding_configs)
+        self.tpa_embedding_module = get_embedding_module([self.tpa_embedding_config])
         self.profile_embedding_module = get_embedding_module([self.profile_embedding_config])
         self.sequence_embedding_module = get_embedding_module([self.sequence_embedding_config])
         self.context_embedding_module = get_embedding_module([self.context_embedding_config])
@@ -714,6 +734,7 @@ class TransformerModel(nn.Module):
         # embeddings_awaitable: EmbeddingCollectionAwaitable = self.embedding_module(kjt)
         # embeddings: Dict[str, JaggedTensor] = embeddings_awaitable.wait()
 
+        tpa_embeddings: Dict[str, JaggedTensor] = self.tpa_embedding_module(kjt)
         # 首先验证是否可以这样给kjt分开
         # print(kjt['19'])
         # 注：这里没有对kjt进行分开处理，直接传入整个kjt就行，embedding_module会根据配置好的feature_names自动进行lookup
@@ -729,6 +750,7 @@ class TransformerModel(nn.Module):
 
         # input_tokens, padding_mask = self._preprocess(embeddings)
         input_tokens, padding_mask = self._preprocess(
+            tpa_embeddings,
             profile_embeddings,
             sequence_embeddings,
             context_embeddings,
@@ -826,6 +848,7 @@ class preprocessor(nn.Module):
         super().__init__()
 
         self.batch_size = batch_size
+        self._TPA_SLOTS = args.TPA_SLOTS
         self._PROFILE_SLOTS = PROFILE_SLOTS
         self._SEQ_SLOTS = SEQ_SLOTS
         self._CONTEXT_SLOTS = CONTEXT_SLOTS
@@ -893,11 +916,20 @@ class preprocessor(nn.Module):
     def forward(
         self,
         # embeddings: Dict[str, JaggedTensor],
+        tpa_embeddings: Dict[str, JaggedTensor],
         profile_embeddings: Dict[str, JaggedTensor],
         sequence_embeddings: Dict[str, JaggedTensor],
         context_embeddings: Dict[str, JaggedTensor],
         candidate_embeddings: Dict[str, JaggedTensor],
     ):
+        # ---- TPA Slots ----
+        # 直接sum pooling到seqMLP的输出token上
+        # tpa_jts_values = [tpa_embeddings[slot].values() for slot in self._TPA_SLOTS]
+        tpa = None
+        for slot in self._TPA_SLOTS:
+            v = tpa_embeddings[slot].values()
+            tpa = v if tpa is None else tpa + v
+
         # ---- profile ----
         pooled_profile_values = [embedding_pooling(profile_embeddings[key].values(), profile_embeddings[key].offsets(), "sum") for key in self._PROFILE_SLOTS]  # list:[profile_slot_num, tensor([batch_size, embedding_dim])]
         concatenated_profile_features = torch.cat(pooled_profile_values, dim=-1)  # [batch_size, profile_slot_num * embedding_dim]
@@ -917,6 +949,9 @@ class preprocessor(nn.Module):
         concatenated_sequence_features = torch.cat(sequence_jts_values, dim=-1)   # [batch_total_items, seq_slot_num * embedding_dim]
         sequence_embeddings = self._sequence_mlp(concatenated_sequence_features)  # [batch_total_items, token_dim]
 
+        # sum pooling 进来 TPA
+        sequence_embeddings = sequence_embeddings + tpa
+        
         # TODO
         # sequence_embeddings_ = [self._sequence_mlp_zoos[i](concatenated_sequence_features) for i in range(8)]
         # sequence_embeddings_ = torch.concat(sequence_embeddings_, dim=-1)
