@@ -187,7 +187,7 @@ def parse_args():
         "--embedding_dim", type=int, default=8, help="embedding dimension"
     )
     parser.add_argument(
-        "--num_embeddings", type=int, default=10000000, help="number of embeddings"
+        "--num_embeddings", type=int, default=300000000, help="number of embeddings"
     )
     parser.add_argument(
         "--profile_embedding_dim", type=int, default=8, help="profile embedding dimension"#TODO: modify
@@ -196,22 +196,22 @@ def parse_args():
         "--profile_embedding_num", type=int, default=10000000, help="number of profile embeddings"#TODO: modify
     )
     parser.add_argument(
-        "--sequence_embedding_dim", type=int, default=64, help="sequence embedding dimension"
+        "--sequence_embedding_dim", type=int, default=8, help="sequence embedding dimension"
     )
     parser.add_argument(
-        "--sequence_embedding_num", type=int, default=10000000, help="number of sequence embeddings"
+        "--sequence_embedding_num", type=int, default=300000000, help="number of sequence embeddings"
     )
     parser.add_argument(
-        "--context_embedding_dim", type=int, default=8, help="context embedding dimension"#TODO: modify
+        "--context_embedding_dim", type=int, default=32, help="context embedding dimension"#TODO: modify
     )
     parser.add_argument(
         "--context_embedding_num", type=int, default=10000000, help="number of context embeddings"#TODO: modify
     )
     parser.add_argument(
-        "--candidate_embedding_dim", type=int, default=6, help="candidate embedding dimension"
+        "--candidate_embedding_dim", type=int, default=8, help="candidate embedding dimension"
     )
     parser.add_argument(
-        "--candidate_embedding_num", type=int, default=10000000, help="number of candidate embeddings"
+        "--candidate_embedding_num", type=int, default=300000000, help="number of candidate embeddings"
     )
     parser.add_argument(
         "--pos_embedding_dim", type=int, default=8, help="position embedding dimension"
@@ -219,12 +219,20 @@ def parse_args():
     parser.add_argument(
         "--pos_embedding_num", type=int, default=100, help="number of position embeddings"
     )
+    parser.add_argument("--profile_mlp_dims", type=List[int], default=[64], help="dimension of profile MLP layer, with type List[int]")
+    parser.add_argument("--sequence_mlp_dims", type=List[int], default=[64], help="dimension of sequence MLP layer, with type List[int]")
+    parser.add_argument("--context_mlp_dims", type=List[int], default=[128], help="dimension of context MLP layer, with type List[int]")
+    parser.add_argument("--candidate_mlp_dims", type=List[int], default=[512], help="dimension of candidate MLP layer, with type List[int]")
+    # 切分token个数
+    parser.add_argument(
+        "--context_token_num", type=int, default=2, help="number of tokens for context features"
+    )
+    parser.add_argument(
+        "--candidate_token_num", type=int, default=8, help="number of tokens for candidate features"
+    )
+
 
     # --- Transformer / HSTU Architecture ---
-    parser.add_argument("--_profile_mlp_dims", type=List[int], default=[64], help="dimension of profile MLP layer, with type List[int]")
-    parser.add_argument("--_sequence_mlp_dims", type=List[int], default=[64], help="dimension of sequence MLP layer, with type List[int]")
-    parser.add_argument("--_context_mlp_dims", type=List[int], default=[64], help="dimension of context MLP layer, with type List[int]")
-    parser.add_argument("--_candidate_mlp_dims", type=List[int], default=[512], help="dimension of candidate MLP layer, with type List[int]")
     parser.add_argument("--token_dim", type=int, default=512, help="Dimension of token embeddings")
     parser.add_argument("--num_attention_heads", type=int, default=2, help="Number of attention heads in Transformer")
     parser.add_argument("--num_transformer_layers", type=int, default=2, help="Number of Transformer layers")
@@ -647,6 +655,7 @@ class TransformerModel(nn.Module):
         self._CANDIDATE_SLOTS = args.CANDIDATE_SLOTS
         self.POS_SLOT = args.POS_SLOT
         self.token_dim = args.token_dim
+        self.candidate_token_num = args.candidate_token_num
         
         # self.embedding_configs = get_embedding_configs(args)
         self.embedding_configs = get_embedding_configs(args)
@@ -684,7 +693,7 @@ class TransformerModel(nn.Module):
         )
 
         self._output_mlp = MLP(
-            in_size = self.token_dim,
+            in_size = self.token_dim*self.candidate_token_num,
             layer_sizes = args.output_mlp_dims,
             last_activation = True,
         )
@@ -725,21 +734,22 @@ class TransformerModel(nn.Module):
             candidate_embeddings,
         )
 
-        # causal mask
-        seq_len = input_tokens.shape[1]             # L+1
-        causal_mask = torch.triu(
-            torch.ones(seq_len, seq_len, device=input_tokens.device), 
-            diagonal=1
-        ).bool()                                    # [L+1, L+1]
+        # # causal mask
+        # seq_len = input_tokens.shape[1]             # L+1
+        # causal_mask = torch.triu(
+        #     torch.ones(seq_len, seq_len, device=input_tokens.device), 
+        #     diagonal=1
+        # ).bool()                                    # [L+1, L+1]
         
         # transformer block
         output_tokens = self._transformer_module(   # [B, L+1, token_dim]
             input_tokens, 
-            mask=causal_mask,
+            # mask=causal_mask,
             src_key_padding_mask=~padding_mask, # 注意：这里需要取反 这里True位置的元素会被mask掉
         )
 
-        candidate_token_output = output_tokens[:, -1, :]    # [B, token_dim]
+        candidate_token_output = output_tokens[:, -self.candidate_token_num:, :]    # [B, candidate_token_num, token_dim]
+        candidate_token_output = candidate_token_output.flatten(start_dim=1)        # [B, candidate_token_num*token_dim]
         logits = self._output_mlp(candidate_token_output)   # [B, mlp_out_dim]
 
         # concate POS_SLOT embedding
@@ -820,6 +830,11 @@ class preprocessor(nn.Module):
         self._CONTEXT_SLOTS = CONTEXT_SLOTS
         self._CANDIDATE_SLOTS = CANDIDATE_SLOTS
 
+        # 切分token个数
+        self.token_dim = token_dim
+        self.context_token_num = args.context_token_num
+        self.candidate_token_num = args.candidate_token_num
+
         # TODO
         # self._sequence_mlp_zoos = []
         # num_zoo = 512 / 64  # 9*8=72, 接近64 , 64*8=512
@@ -833,11 +848,24 @@ class preprocessor(nn.Module):
         #    )
         # end TODO
 
+        # ---- Type Embedding ----
+        # 0: profile, 1: sequence, 2: context, 3: candidate
+        self.NUM_TOKEN_TYPES = 4
+        self.type_embedding = nn.Embedding(self.NUM_TOKEN_TYPES, token_dim)
+        # 初始化为较小的值，避免破坏原有 token 表示
+        nn.init.normal_(self.type_embedding.weight, mean=0.0, std=0.02)
+
+        # 缓存 type id tensors，跟随 module.to(device) 自动迁移
+        self.register_buffer("_type_id_profile",   torch.tensor([0], dtype=torch.long))
+        self.register_buffer("_type_id_sequence",  torch.tensor([1], dtype=torch.long))
+        self.register_buffer("_type_id_context",   torch.tensor([2], dtype=torch.long))
+        self.register_buffer("_type_id_candidate", torch.tensor([3], dtype=torch.long))
+
         # profileMLP
         self._profile_mlp = SlotMLP(
             input_dim=total_profile_dim,  # profile特征的总维度
             # hidden_dims=[128],
-            hidden_dims=args._profile_mlp_dims,
+            hidden_dims=args.profile_mlp_dims,
             output_dim=token_dim
         )
 
@@ -845,20 +873,20 @@ class preprocessor(nn.Module):
         self._sequence_mlp = SlotMLP(
             input_dim=total_sequence_dim,
             # hidden_dims=[512],
-            hidden_dims=args._sequence_mlp_dims,
+            hidden_dims=args.sequence_mlp_dims,
             output_dim=token_dim
         )
         self._context_mlp = SlotMLP(
             input_dim=total_context_dim,
             # hidden_dims=[512],
-            hidden_dims=args._context_mlp_dims,
-            output_dim=token_dim
+            hidden_dims=args.context_mlp_dims,
+            output_dim=token_dim*self.context_token_num,  # context features will be split into multiple tokens, so the output dimension of context MLP should be token_dim * context_token_num
         )
         self._candidate_mlp = SlotMLP(
             input_dim=total_candidate_dim,
             # hidden_dims=[512],
-            hidden_dims=args._candidate_mlp_dims,
-            output_dim=token_dim
+            hidden_dims=args.candidate_mlp_dims,
+            output_dim=token_dim*self.candidate_token_num,  # candidate features will be split into multiple tokens, so the output dimension of candidate MLP should be token_dim * candidate_token_num
         )
 
     def forward(
@@ -902,47 +930,62 @@ class preprocessor(nn.Module):
         )  # [B, L, token_dim]
 
         # ---- context ----
+        # TODO: 尝试直接sum pooling
         pooled_context_values = [embedding_pooling(context_embeddings[key].values(), context_embeddings[key].offsets(), "sum") for key in self._CONTEXT_SLOTS]  # list:[context_slot_num, tensor([batch_size, embedding_dim])]
         concatenated_context_features = torch.cat(pooled_context_values, dim=-1)  # [batch_size, context_slot_num * embedding_dim]
-        context_tokens = self._context_mlp(concatenated_context_features)  # [batch_size, token_dim]
-        context_tokens = context_tokens.unsqueeze(1)                              # [batch_size, 1, token_dim]
+        context_tokens = self._context_mlp(concatenated_context_features)  # [batch_size, token_dim*context_token_num]
+        context_tokens = context_tokens.view(
+            context_tokens.size(0), 
+            self.context_token_num, 
+            self.token_dim
+        )  # [batch_size, context_token_num, token_dim]
 
         # ---- candidate ----
         pooled_candidate_values = [embedding_pooling(candidate_embeddings[key].values(), candidate_embeddings[key].offsets(), "sum") for key in self._CANDIDATE_SLOTS]  # list:[candidate_slot_num, tensor([batch_size, embedding_dim])]
         concatenated_candidate_features = torch.cat(pooled_candidate_values, dim=-1)  # [batch_size, candidate_slot_num * embedding_dim]
 
-        candidate_tokens = self._candidate_mlp(concatenated_candidate_features)       # [batch_size, token_dim]
-        candidate_tokens = candidate_tokens.unsqueeze(1)                              # [batch_size, 1, token_dim]
+        candidate_tokens = self._candidate_mlp(concatenated_candidate_features)       # [batch_size, token_dim*candidate_token_num]
+        candidate_tokens = candidate_tokens.view(
+            candidate_tokens.size(0),
+            self.candidate_token_num,
+            self.token_dim
+        )  # [batch_size, candidate_token_num, token_dim]
 
+        # ---- SUM Type Embedding ----
+        # type_ids: 0=profile, 1=sequence, 2=context, 3=candidate
+        profile_tokens   = profile_tokens   + self.type_embedding(self._type_id_profile)
+        sequences_tokens = sequences_tokens + self.type_embedding(self._type_id_sequence)
+        context_tokens   = context_tokens   + self.type_embedding(self._type_id_context)
+        candidate_tokens = candidate_tokens + self.type_embedding(self._type_id_candidate)
+        
         # ---- input tokens ----
-        input_tokens = torch.cat([profile_tokens, sequences_tokens, context_tokens, candidate_tokens], dim=1)         # [batch_size, L+1, token_dim]
+        input_tokens = torch.cat([profile_tokens, sequences_tokens, context_tokens, candidate_tokens], dim=1)         # [batch_size, 1+L+context_token_num+candidate_token_num, token_dim]
 
         # ---- padding mask ----
-        # profile mask: 始终有效 (True)
         L_profile = profile_tokens.shape[1]
         profile_mask = torch.ones(
             B, L_profile, 
             dtype=torch.bool, 
             device=input_tokens.device
-        )  # [B, L_profile]
-        padding_mask = torch.arange(  # [batch_size, L]
+        )                               # [batch_size, 1]
+        padding_mask = torch.arange(    # [batch_size, L]
             max_seq_len, 
             device=sequences_tokens.device
         )[None, :] < sequence_embeddings_lengths[:, None]
-        # context mask: 始终有效 (True)
         L_context = context_tokens.shape[1]
         context_mask = torch.ones(
             B, L_context, 
             dtype=torch.bool, 
             device=input_tokens.device
-        )  # [B, L_context]
-        candidate_mask = torch.ones(  # [batch_size, 1]
-            B, 1, 
+        )                               # [batch_size, context_token_num]
+        L_candidate = candidate_tokens.shape[1]
+        candidate_mask = torch.ones(    # [batch_size, candidate_token_num]
+            B, L_candidate, 
             dtype=torch.bool, 
             device=input_tokens.device
         )
         # 拼接
-        padding_mask = torch.cat([profile_mask, padding_mask, context_mask, candidate_mask], dim=1)  # [batch_size, L+1]
+        padding_mask = torch.cat([profile_mask, padding_mask, context_mask, candidate_mask], dim=1)  # [batch_size, 1+L+context_token_num+candidate_token_num]
 
         return  input_tokens, padding_mask
 
