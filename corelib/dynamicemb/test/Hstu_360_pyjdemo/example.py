@@ -684,12 +684,13 @@ class TransformerModel(nn.Module):
         )
         
         self._transformer_module = TransformerBlock(
-            embedding_dim=self.token_dim,
+            d_model=self.token_dim,
             num_heads=args.num_attention_heads,
             num_layers=args.num_transformer_layers,
             dropout=args.dropout,
-            ff_dim=args.dim_feedforward,
+            dim_ff=args.dim_feedforward,
             max_seq_length=args.max_seq_length,
+            device = device,
         )
 
         self._output_mlp = MLP(
@@ -744,7 +745,7 @@ class TransformerModel(nn.Module):
         # transformer block
         output_tokens = self._transformer_module(   # [B, L+1, token_dim]
             input_tokens, 
-            # mask=causal_mask,
+            attn_mask=None,
             src_key_padding_mask=~padding_mask, # 注意：这里需要取反 这里True位置的元素会被mask掉
         )
 

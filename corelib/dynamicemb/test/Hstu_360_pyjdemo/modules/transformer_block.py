@@ -1,6 +1,9 @@
 import torch
 import torch.nn as nn
 import math
+from typing import Optional, Callable
+from torch import Tensor
+import torch.nn.functional as F
 
 
 class TransformerBlock(nn.Module):
@@ -11,43 +14,58 @@ class TransformerBlock(nn.Module):
     
     def __init__(
         self,
-        embedding_dim: int = 128,
+        d_model: int = 128,
         num_heads: int = 2,
         num_layers: int = 2,
         dropout: float = 0,
-        ff_dim: int = 256,
+        dim_ff: int = 256,
         max_seq_length: int = 512,
+        activation: Callable[[Tensor], Tensor] = F.relu,
+        layer_norm_eps: float = 1e-5,
+        norm_first: bool = True,
+        bias: bool = True,
+        device=None,
+        dtype=None,
     ):
         """
         Args:
-            embedding_dim: dimension of input embeddings
+            embedding_dim / d_model: dimension of input embeddings (either name works)
             num_heads: number of attention heads
             num_layers: number of transformer layers
             dropout: dropout rate
-            ff_dim: dimension of feedforward network
+            ff_dim / dim_ff: dimension of feedforward network (either name works)
             max_seq_length: maximum sequence length for positional encoding
+            device: device for initialization
+            dtype: dtype for initialization
         """
         super().__init__()
         
-        self.embedding_dim = embedding_dim
+        self.d_model = d_model
+        self.dim_ff = dim_ff
+
         self.num_heads = num_heads
         
         # Positional Encoding
-        self.pos_encoder = PositionalEncoding(embedding_dim, dropout, max_seq_length)
+        self.pos_encoder = PositionalEncoding(self.d_model, dropout, max_seq_length)
         
         # Transformer Encoder Layers
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model=embedding_dim,
+            d_model=self.d_model,
             nhead=num_heads,
-            dim_feedforward=ff_dim,
+            dim_feedforward=self.dim_ff,
             dropout=dropout,
-            activation='relu',
-            batch_first=True  # (batch, seq, feature)
+            activation=activation,
+            batch_first=True,
+            layer_norm_eps=layer_norm_eps,
+            norm_first=norm_first,
+            bias=bias,
+            device=device,
+            dtype=dtype,
         )
         
         self.transformer_encoder = nn.TransformerEncoder(
             encoder_layer,
-            num_layers=num_layers
+            num_layers=num_layers,
         )
         
         # 自定义初始化
@@ -71,35 +89,31 @@ class TransformerBlock(nn.Module):
     def forward(
         self, 
         x: torch.Tensor, 
-        mask: torch.Tensor = None,
-        src_key_padding_mask: torch.Tensor = None
+        attn_mask: torch.Tensor = None,
+        src_key_padding_mask: torch.Tensor = None,
+        is_causal: bool = False,
     ) -> torch.Tensor:
         """
         Args:
             x: input tensor of shape (batch_size, seq_length, embedding_dim)
-            mask: attention mask (optional)
+            mask / attn_mask: attention mask (either name works)
             src_key_padding_mask: padding mask of shape (batch_size, seq_length)
                 True indicates positions to be masked
+            is_causal: whether to apply causal masking
         
         Returns:
             output tensor of shape (batch_size, seq_length, embedding_dim)
         """
-        # Handle list input - convert to tensor
-        if isinstance(x, list):
-            # Stack along sequence dimension
-            # Each tensor in list: (batch_size, embedding_dim)
-            # Result: (batch_size, num_features, embedding_dim)
-            x = torch.stack(x, dim=1)
         # Add positional encoding
         x = self.pos_encoder(x)
         
         # Apply transformer encoder
         output = self.transformer_encoder(
             x, 
-            mask=None,  #
-            src_key_padding_mask=src_key_padding_mask
+            mask=attn_mask,
+            src_key_padding_mask=src_key_padding_mask,
+            is_causal=is_causal,
         )
-        
         
         return output
 
