@@ -22,7 +22,7 @@ class TransformerBlock(nn.Module):
         max_seq_length: int = 512,
         activation: Callable[[Tensor], Tensor] = F.relu,
         layer_norm_eps: float = 1e-5,
-        norm_first: bool = True,
+        norm_first: bool = False,
         bias: bool = True,
         device=None,
         dtype=None,
