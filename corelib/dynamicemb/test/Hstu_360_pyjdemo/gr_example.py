@@ -151,6 +151,13 @@ def parse_args():
         help="all input slots",
     )
     parser.add_argument(
+        "--ALL_SLOTS_WO_TPA",
+        type=List[int],
+        default=['0', '2', '12', '13', '14', '15','20', '66', '67', '68', '69', '70', '92', '501', '502', '503', '504', '505', '506', '507', '510', '511', '514', '515', '516', '517', '518', '520', '521', '522', '523', '524', '525', '527', '528', '529', '532', '533', '534', '535', '536', '537', '538', '540', '541', '547', '548', '560', '561', '562', '800', '801', '802', '803', '814', '815', '816', '817', '818', '819', '825', '826', '914', '917', '921', '939', '942', '967', '1041', '1044', '1047', '1059', '1062', '1109', '1110', '1501', '1506', 
+        '1800', '1801', '1802', '1803', '1804', '1805', '1806', '1807', '1810', '1813', '1815', '1816', '1817', '1818', '1819', '19'],
+        help="all input slots except time, position, action slots",
+    )
+    parser.add_argument(
         "--TPA_SLOTS",
         type=List[int],
         default=['1811', '1812', '1814'],
@@ -193,7 +200,7 @@ def parse_args():
         "--embedding_dim", type=int, default=8, help="embedding dimension"
     )
     parser.add_argument(
-        "--num_embeddings", type=int, default=300000000, help="number of embeddings"
+        "--num_embeddings", type=int, default=2000000000, help="number of embeddings"
     )
     parser.add_argument(
         "--tpa_embedding_dim", type=int, default=64, help="embedding dimension for time, position, action features"
@@ -201,43 +208,43 @@ def parse_args():
     parser.add_argument(
         "--tpa_embedding_num", type=int, default=100000, help="number of embeddings for time, position, action features"
     )
-    parser.add_argument(
-        "--profile_embedding_dim", type=int, default=8, help="profile embedding dimension"#TODO: modify
-    )
-    parser.add_argument(
-        "--profile_embedding_num", type=int, default=10000000, help="number of profile embeddings"#TODO: modify
-    )
-    parser.add_argument(
-        "--sequence_embedding_dim", type=int, default=8, help="sequence embedding dimension"
-    )
-    parser.add_argument(
-        "--sequence_embedding_num", type=int, default=300000000, help="number of sequence embeddings"
-    )
-    parser.add_argument(
-        "--context_embedding_dim", type=int, default=32, help="context embedding dimension"#TODO: modify
-    )
-    parser.add_argument(
-        "--context_embedding_num", type=int, default=10000000, help="number of context embeddings"#TODO: modify
-    )
-    parser.add_argument(
-        "--candidate_embedding_dim", type=int, default=8, help="candidate embedding dimension"
-    )
-    parser.add_argument(
-        "--candidate_embedding_num", type=int, default=300000000, help="number of candidate embeddings"
-    )
-    parser.add_argument(
-        "--pos_embedding_dim", type=int, default=8, help="position embedding dimension"
-    )
-    parser.add_argument(
-        "--pos_embedding_num", type=int, default=100, help="number of position embeddings"
-    )
+    # parser.add_argument(
+    #     "--profile_embedding_dim", type=int, default=8, help="profile embedding dimension"#TODO: modify
+    # )
+    # parser.add_argument(
+    #     "--profile_embedding_num", type=int, default=10000000, help="number of profile embeddings"#TODO: modify
+    # )
+    # parser.add_argument(
+    #     "--sequence_embedding_dim", type=int, default=8, help="sequence embedding dimension"
+    # )
+    # parser.add_argument(
+    #     "--sequence_embedding_num", type=int, default=300000000, help="number of sequence embeddings"
+    # )
+    # parser.add_argument(
+    #     "--context_embedding_dim", type=int, default=32, help="context embedding dimension"#TODO: modify
+    # )
+    # parser.add_argument(
+    #     "--context_embedding_num", type=int, default=10000000, help="number of context embeddings"#TODO: modify
+    # )
+    # parser.add_argument(
+    #     "--candidate_embedding_dim", type=int, default=8, help="candidate embedding dimension"
+    # )
+    # parser.add_argument(
+    #     "--candidate_embedding_num", type=int, default=300000000, help="number of candidate embeddings"
+    # )
+    # parser.add_argument(
+    #     "--pos_embedding_dim", type=int, default=8, help="position embedding dimension"
+    # )
+    # parser.add_argument(
+    #     "--pos_embedding_num", type=int, default=100, help="number of position embeddings"
+    # )
     parser.add_argument("--profile_mlp_dims", type=List[int], default=[64], help="dimension of profile MLP layer, with type List[int]")
     parser.add_argument("--sequence_mlp_dims", type=List[int], default=[64], help="dimension of sequence MLP layer, with type List[int]")
     parser.add_argument("--context_mlp_dims", type=List[int], default=[128], help="dimension of context MLP layer, with type List[int]")
     parser.add_argument("--candidate_mlp_dims", type=List[int], default=[512], help="dimension of candidate MLP layer, with type List[int]")
     # 切分token个数
     parser.add_argument(
-        "--context_token_num", type=int, default=2, help="number of tokens for context features"
+        "--context_token_num", type=int, default=1, help="number of tokens for context features"
     )
     parser.add_argument(
         "--candidate_token_num", type=int, default=8, help="number of tokens for candidate features"
@@ -579,7 +586,7 @@ def apply_dmp(model, args, training):
     return dmp
 
 def get_embedding_configs(args):
-    # create EmbeddingConfig for each slot
+    # # create EmbeddingConfig for each slot
     # eb_configs = []
     # for slot in args.ALL_SLOTS:
     #     config = EmbeddingConfig(
@@ -602,6 +609,63 @@ def get_embedding_configs(args):
     # )
     # eb_configs = [eb_config]
 
+    # eb_config_tpa = EmbeddingConfig(
+    #     name="tpa_slots",
+    #     embedding_dim=args.tpa_embedding_dim,
+    #     num_embeddings=args.tpa_embedding_num,
+    #     feature_names=[str(slot) for slot in args.TPA_SLOTS],
+    #     data_type=DataType.FP32,
+    # )
+    
+    # eb_config_prof = EmbeddingConfig(
+    #     name="profile_slots",
+    #     embedding_dim=args.profile_embedding_dim,
+    #     num_embeddings=args.profile_embedding_num,
+    #     feature_names=[str(slot) for slot in args.PROFILE_SLOTS],
+    #     data_type=DataType.FP32,
+    # )
+
+    # eb_config_seq = EmbeddingConfig(
+    #     name="sequence_slots",
+    #     embedding_dim=args.sequence_embedding_dim,# args.sequence_embedding_dim,
+    #     num_embeddings=args.sequence_embedding_num,
+    #     feature_names=[str(slot) for slot in args.SEQ_SLOTS],
+    #     data_type=DataType.FP32,
+    # )
+
+    # eb_config_context = EmbeddingConfig(
+    #     name="context_slots",
+    #     embedding_dim=args.context_embedding_dim,
+    #     num_embeddings=args.context_embedding_num,
+    #     feature_names=[str(slot) for slot in args.CONTEXT_SLOTS],
+    #     data_type=DataType.FP32,
+    # )
+
+    # eb_config_candidate = EmbeddingConfig(
+    #     name="candidate_slots",
+    #     embedding_dim=args.candidate_embedding_dim,
+    #     num_embeddings=args.candidate_embedding_num,
+    #     feature_names=[str(slot) for slot in args.CANDIDATE_SLOTS],
+    #     data_type=DataType.FP32,
+    # )
+
+    # # TODO: customize pos slot embed num - pyj
+    # eb_config_pos = EmbeddingConfig(
+    #     name="pos_slot",
+    #     embedding_dim=args.pos_embedding_dim,
+    #     num_embeddings=args.pos_embedding_num,
+    #     feature_names=[str(args.POS_SLOT)],
+    #     data_type=DataType.FP32,
+    # )
+
+    eb_configs = []
+    eb_config_shared = EmbeddingConfig(
+        name="sparse_table_wo_tpa",
+        embedding_dim=args.embedding_dim,
+        num_embeddings=args.num_embeddings,  # `num_embeddings` in `EmbeddingConfig` is the sum of all slices on all GPUs for a table.
+        feature_names=[str(slot) for slot in args.ALL_SLOTS_WO_TPA],  # a list, means different features can share the same table
+        data_type=DataType.FP32,  # weight or embedding's data type.
+    )
     eb_config_tpa = EmbeddingConfig(
         name="tpa_slots",
         embedding_dim=args.tpa_embedding_dim,
@@ -609,49 +673,9 @@ def get_embedding_configs(args):
         feature_names=[str(slot) for slot in args.TPA_SLOTS],
         data_type=DataType.FP32,
     )
-    
-    eb_config_prof = EmbeddingConfig(
-        name="profile_slots",
-        embedding_dim=args.profile_embedding_dim,
-        num_embeddings=args.profile_embedding_num,
-        feature_names=[str(slot) for slot in args.PROFILE_SLOTS],
-        data_type=DataType.FP32,
-    )
+    eb_configs = [eb_config_shared, eb_config_tpa]
 
-    eb_config_seq = EmbeddingConfig(
-        name="sequence_slots",
-        embedding_dim=args.sequence_embedding_dim,# args.sequence_embedding_dim,
-        num_embeddings=args.sequence_embedding_num,
-        feature_names=[str(slot) for slot in args.SEQ_SLOTS],
-        data_type=DataType.FP32,
-    )
-
-    eb_config_context = EmbeddingConfig(
-        name="context_slots",
-        embedding_dim=args.context_embedding_dim,
-        num_embeddings=args.context_embedding_num,
-        feature_names=[str(slot) for slot in args.CONTEXT_SLOTS],
-        data_type=DataType.FP32,
-    )
-
-    eb_config_candidate = EmbeddingConfig(
-        name="candidate_slots",
-        embedding_dim=args.candidate_embedding_dim,
-        num_embeddings=args.candidate_embedding_num,
-        feature_names=[str(slot) for slot in args.CANDIDATE_SLOTS],
-        data_type=DataType.FP32,
-    )
-
-    # TODO: customize pos slot embed num - pyj
-    eb_config_pos = EmbeddingConfig(
-        name="pos_slot",
-        embedding_dim=args.pos_embedding_dim,
-        num_embeddings=args.pos_embedding_num,
-        feature_names=[str(args.POS_SLOT)],
-        data_type=DataType.FP32,
-    )
-
-    eb_configs = [eb_config_tpa, eb_config_prof, eb_config_seq, eb_config_context, eb_config_candidate, eb_config_pos]
+    # eb_configs = [eb_config_tpa, eb_config_prof, eb_config_seq, eb_config_context, eb_config_candidate, eb_config_pos]
     
     return eb_configs
 
@@ -677,15 +701,20 @@ class TransformerModel(nn.Module):
         self.candidate_token_num = args.candidate_token_num
         
         # self.embedding_configs = get_embedding_configs(args)
-        self.embedding_configs = get_embedding_configs(args)
-        self.tpa_embedding_config, self.profile_embedding_config, self.sequence_embedding_config, self.context_embedding_config, self.candidate_embedding_config, self.pos_embedding_config = self.embedding_configs
+        # self.embedding_configs = get_embedding_configs(args)
+        # self.tpa_embedding_config, self.profile_embedding_config, self.sequence_embedding_config, self.context_embedding_config, self.candidate_embedding_config, self.pos_embedding_config = self.embedding_configs
         # self.embedding_module = get_embedding_module(self.embedding_configs)
+        # self.tpa_embedding_module = get_embedding_module([self.tpa_embedding_config])
+        # self.profile_embedding_module = get_embedding_module([self.profile_embedding_config])
+        # self.sequence_embedding_module = get_embedding_module([self.sequence_embedding_config])
+        # self.context_embedding_module = get_embedding_module([self.context_embedding_config])
+        # self.candidate_embedding_module = get_embedding_module([self.candidate_embedding_config])
+        # self.pos_embedding_module = get_embedding_module([self.pos_embedding_config])
+        # merge embedding table
+        self.embedding_configs = get_embedding_configs(args)
+        self.shared_embedding_config, self.tpa_embedding_config = self.embedding_configs
+        self.shared_embedding_module = get_embedding_module([self.shared_embedding_config])
         self.tpa_embedding_module = get_embedding_module([self.tpa_embedding_config])
-        self.profile_embedding_module = get_embedding_module([self.profile_embedding_config])
-        self.sequence_embedding_module = get_embedding_module([self.sequence_embedding_config])
-        self.context_embedding_module = get_embedding_module([self.context_embedding_config])
-        self.candidate_embedding_module = get_embedding_module([self.candidate_embedding_config])
-        self.pos_embedding_module = get_embedding_module([self.pos_embedding_config])
         
         _, self.total_profile_dim, self.total_sequence_dim, self.total_context_dim, self.total_candidate_dim = self._initialize_embedding_dimensions()
 
@@ -734,27 +763,34 @@ class TransformerModel(nn.Module):
         # embeddings_awaitable: EmbeddingCollectionAwaitable = self.embedding_module(kjt)
         # embeddings: Dict[str, JaggedTensor] = embeddings_awaitable.wait()
 
-        tpa_embeddings: Dict[str, JaggedTensor] = self.tpa_embedding_module(kjt)
-        # 首先验证是否可以这样给kjt分开
-        # print(kjt['19'])
-        # 注：这里没有对kjt进行分开处理，直接传入整个kjt就行，embedding_module会根据配置好的feature_names自动进行lookup
-        profile_embeddings: Dict[str, JaggedTensor] = self.profile_embedding_module(kjt)
-        # # debugging
-        # print("[Debugging] profile_embeddings keys:", profile_embeddings.keys())
-        # print("[Debugging] profile_embeddings:", profile_embeddings['66'])
-        sequence_embeddings: Dict[str, JaggedTensor] = self.sequence_embedding_module(kjt)
-        context_embeddings: Dict[str, JaggedTensor] = self.context_embedding_module(kjt)
-        candidate_embeddings: Dict[str, JaggedTensor] = self.candidate_embedding_module(kjt)
-        pos_embedding: JaggedTensor = self.pos_embedding_module(kjt)
+        # tpa_embeddings: Dict[str, JaggedTensor] = self.tpa_embedding_module(kjt)
+        # # 首先验证是否可以这样给kjt分开
+        # # print(kjt['19'])
+        # # 注：这里没有对kjt进行分开处理，直接传入整个kjt就行，embedding_module会根据配置好的feature_names自动进行lookup
+        # profile_embeddings: Dict[str, JaggedTensor] = self.profile_embedding_module(kjt)
+        # # # debugging
+        # # print("[Debugging] profile_embeddings keys:", profile_embeddings.keys())
+        # # print("[Debugging] profile_embeddings:", profile_embeddings['66'])
+        # sequence_embeddings: Dict[str, JaggedTensor] = self.sequence_embedding_module(kjt)
+        # context_embeddings: Dict[str, JaggedTensor] = self.context_embedding_module(kjt)
+        # candidate_embeddings: Dict[str, JaggedTensor] = self.candidate_embedding_module(kjt)
+        # pos_embedding: JaggedTensor = self.pos_embedding_module(kjt)
         # embeddings: Dict[str, JaggedTensor] = self.embedding_module(kjt)
 
+        shared_embeddings: Dict[str, JaggedTensor] = self.shared_embedding_module(kjt)
+        tpa_embeddings: Dict[str, JaggedTensor] = self.tpa_embedding_module(kjt)
+
         # input_tokens, padding_mask = self._preprocess(embeddings)
+        # input_tokens, padding_mask = self._preprocess(
+        #     tpa_embeddings,
+        #     profile_embeddings,
+        #     sequence_embeddings,
+        #     context_embeddings,
+        #     candidate_embeddings,
+        # )
         input_tokens, padding_mask = self._preprocess(
+            shared_embeddings,
             tpa_embeddings,
-            profile_embeddings,
-            sequence_embeddings,
-            context_embeddings,
-            candidate_embeddings,
         )
 
         # # causal mask
@@ -777,7 +813,8 @@ class TransformerModel(nn.Module):
 
         # concate POS_SLOT embedding
         # pos_slot_embedding = embeddings[self.POS_SLOT].values()  # [B, embedding_dim]
-        pos_slot_embedding = pos_embedding[self.POS_SLOT].values()  # [B, embedding_dim]
+        # pos_slot_embedding = pos_embedding[self.POS_SLOT].values()  # [B, embedding_dim]
+        pos_slot_embedding = shared_embeddings[self.POS_SLOT].values()  # [B, embedding_dim]
         # print("[Debugging] pos_slot_embedding.shape:", pos_slot_embedding.shape)
         logits = torch.concat([logits, pos_slot_embedding], dim=-1)  # [B, mlp_out_dim + embedding_dim]
 
@@ -916,11 +953,13 @@ class preprocessor(nn.Module):
     def forward(
         self,
         # embeddings: Dict[str, JaggedTensor],
+        # tpa_embeddings: Dict[str, JaggedTensor],
+        # profile_embeddings: Dict[str, JaggedTensor],
+        # sequence_embeddings: Dict[str, JaggedTensor],
+        # context_embeddings: Dict[str, JaggedTensor],
+        # candidate_embeddings: Dict[str, JaggedTensor],
+        shared_embeddings: Dict[str, JaggedTensor],
         tpa_embeddings: Dict[str, JaggedTensor],
-        profile_embeddings: Dict[str, JaggedTensor],
-        sequence_embeddings: Dict[str, JaggedTensor],
-        context_embeddings: Dict[str, JaggedTensor],
-        candidate_embeddings: Dict[str, JaggedTensor],
     ):
         # ---- TPA Slots ----
         # 直接sum pooling到seqMLP的输出token上
@@ -931,20 +970,20 @@ class preprocessor(nn.Module):
             tpa = v if tpa is None else tpa + v
 
         # ---- profile ----
-        pooled_profile_values = [embedding_pooling(profile_embeddings[key].values(), profile_embeddings[key].offsets(), "sum") for key in self._PROFILE_SLOTS]  # list:[profile_slot_num, tensor([batch_size, embedding_dim])]
+        pooled_profile_values = [embedding_pooling(shared_embeddings[key].values(), shared_embeddings[key].offsets(), "sum") for key in self._PROFILE_SLOTS]  # list:[profile_slot_num, tensor([batch_size, embedding_dim])]
         concatenated_profile_features = torch.cat(pooled_profile_values, dim=-1)  # [batch_size, profile_slot_num * embedding_dim]
         profile_tokens = self._profile_mlp(concatenated_profile_features)  # [batch_size, token_dim]
         profile_tokens = profile_tokens.unsqueeze(1)                      # [batch_size, 1, token_dim]
 
         # ---- sequence ----
-        base_jt = sequence_embeddings[self._SEQ_SLOTS[0]]  # JaggedTensor
+        base_jt = shared_embeddings[self._SEQ_SLOTS[0]]  # JaggedTensor
         sequence_embeddings_lengths = base_jt.lengths()
         sequence_embeddings_offsets = base_jt.offsets()
         max_seq_len = int(base_jt.lengths().max().item())
         # 动态获取 batch size 方便预测的时候处理最后一个截断batch
         B = int(sequence_embeddings_lengths.numel())
 
-        sequence_jts = [sequence_embeddings[key] for key in sequence_embeddings.keys() if key in self._SEQ_SLOTS]  # list[jt0, jt1, ...]
+        sequence_jts = [shared_embeddings[key] for key in self._SEQ_SLOTS]  # list[jt0, jt1, ...]
         sequence_jts_values = [jt.values() for jt in sequence_jts]                # list: [seq_slot_num: 9, tensor([batch_total_items, embedding_dim])]
         concatenated_sequence_features = torch.cat(sequence_jts_values, dim=-1)   # [batch_total_items, seq_slot_num * embedding_dim]
         sequence_embeddings = self._sequence_mlp(concatenated_sequence_features)  # [batch_total_items, token_dim]
@@ -967,7 +1006,7 @@ class preprocessor(nn.Module):
 
         # ---- context ----
         # TODO: 尝试直接sum pooling
-        pooled_context_values = [embedding_pooling(context_embeddings[key].values(), context_embeddings[key].offsets(), "sum") for key in self._CONTEXT_SLOTS]  # list:[context_slot_num, tensor([batch_size, embedding_dim])]
+        pooled_context_values = [embedding_pooling(shared_embeddings[key].values(), shared_embeddings[key].offsets(), "sum") for key in self._CONTEXT_SLOTS]  # list:[context_slot_num, tensor([batch_size, embedding_dim])]
         concatenated_context_features = torch.cat(pooled_context_values, dim=-1)  # [batch_size, context_slot_num * embedding_dim]
         context_tokens = self._context_mlp(concatenated_context_features)  # [batch_size, token_dim*context_token_num]
         context_tokens = context_tokens.view(
@@ -977,7 +1016,7 @@ class preprocessor(nn.Module):
         )  # [batch_size, context_token_num, token_dim]
 
         # ---- candidate ----
-        pooled_candidate_values = [embedding_pooling(candidate_embeddings[key].values(), candidate_embeddings[key].offsets(), "sum") for key in self._CANDIDATE_SLOTS]  # list:[candidate_slot_num, tensor([batch_size, embedding_dim])]
+        pooled_candidate_values = [embedding_pooling(shared_embeddings[key].values(), shared_embeddings[key].offsets(), "sum") for key in self._CANDIDATE_SLOTS]  # list:[candidate_slot_num, tensor([batch_size, embedding_dim])]
         concatenated_candidate_features = torch.cat(pooled_candidate_values, dim=-1)  # [batch_size, candidate_slot_num * embedding_dim]
 
         candidate_tokens = self._candidate_mlp(concatenated_candidate_features)       # [batch_size, token_dim*candidate_token_num]
