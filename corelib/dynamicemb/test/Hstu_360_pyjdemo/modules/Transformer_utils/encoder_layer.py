@@ -12,7 +12,7 @@ Explicit differences from nn.TransformerEncoderLayer:
 import torch
 import torch.nn as nn
 from .MultiHeadAttention import MultiHeadAttention
-from typing import Optional
+from typing import Optional, Tuple, Union
 
 
 class TransformerEncoderLayer(nn.Module):
@@ -47,14 +47,20 @@ class TransformerEncoderLayer(nn.Module):
         self.dropout2 = nn.Dropout(dropout)
         self.activation = activation
 
-    def _sa_block(self, x, attn_mask, key_padding_mask, is_causal):
-        x = self.self_attn(
+    def _sa_block(self, x, attn_mask, key_padding_mask, is_causal, need_weights=False):
+        result = self.self_attn(
             x, x, x,
             attn_mask=attn_mask,
-            key_padding_mask=key_padding_mask,  # 传入 padding mask
+            key_padding_mask=key_padding_mask,
             is_causal=is_causal,
+            need_weights=need_weights,
         )
-        return self.dropout1(x)
+        if need_weights:
+            x, attn_weights = result
+            return self.dropout1(x), attn_weights
+        else:
+            x = result
+            return self.dropout1(x)
 
     def _ff_block(self, x):
         x = self.linear2(self.dropout(self.activation(self.linear1(x))))
@@ -64,16 +70,38 @@ class TransformerEncoderLayer(nn.Module):
         self,
         src,
         src_mask=None,
-        src_key_padding_mask=None,  # 新增参数
+        src_key_padding_mask=None,
         is_causal=False,
-    ):
+        need_weights=False,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         x = src
+        attn_weights = None
+
         if self.norm_first:
-            x = x + self._sa_block(self.norm1(x), src_mask, src_key_padding_mask, is_causal)
+            sa_result = self._sa_block(
+                self.norm1(x), src_mask, src_key_padding_mask, is_causal,
+                need_weights=need_weights,
+            )
+            if need_weights:
+                sa_out, attn_weights = sa_result
+            else:
+                sa_out = sa_result
+            x = x + sa_out
             x = x + self._ff_block(self.norm2(x))
         else:
-            x = self.norm1(x + self._sa_block(x, src_mask, src_key_padding_mask, is_causal))
+            sa_result = self._sa_block(
+                x, src_mask, src_key_padding_mask, is_causal,
+                need_weights=need_weights,
+            )
+            if need_weights:
+                sa_out, attn_weights = sa_result
+            else:
+                sa_out = sa_result
+            x = self.norm1(x + sa_out)
             x = self.norm2(x + self._ff_block(x))
+
+        if need_weights:
+            return x, attn_weights
         return x
 
 

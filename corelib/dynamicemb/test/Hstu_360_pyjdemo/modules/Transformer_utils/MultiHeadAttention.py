@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 
 
 class MultiHeadAttention(nn.Module):
@@ -55,23 +56,24 @@ class MultiHeadAttention(nn.Module):
         attn_mask=None,
         key_padding_mask=None,  # 新增：(N, L_kv)，True 表示需要 mask
         is_causal=False,
+        need_weights=False,
     ) -> torch.Tensor:
         """
-        Forward pass; runs the following process:
-            1. Apply input projection
-            2. Split heads and prepare for SDPA
-            3. Run SDPA
-            4. Apply output projection
+        Forward pass.
 
         Args:
-            query (torch.Tensor): query of shape (``N``, ``L_q``, ``E_qk``)
-            key (torch.Tensor): key of shape (``N``, ``L_kv``, ``E_qk``)
-            value (torch.Tensor): value of shape (``N``, ``L_kv``, ``E_v``)
-            attn_mask (torch.Tensor, optional): attention mask of shape (``N``, ``L_q``, ``L_kv``) to pass to SDPA. Default: None
-            is_causal (bool, optional): Whether to apply causal mask. Default: False
+            query (torch.Tensor): (N, L_q, E_qk)
+            key (torch.Tensor): (N, L_kv, E_qk)
+            value (torch.Tensor): (N, L_kv, E_v)
+            attn_mask (torch.Tensor, optional): (L_q, L_kv) or (N, L_q, L_kv). Default: None
+            key_padding_mask (torch.Tensor, optional): (N, L_kv), True = masked. Default: None
+            is_causal (bool, optional): Default: False
+            need_weights (bool, optional): If True, return (output, attn_weights). Default: False
 
         Returns:
-            attn_output (torch.Tensor): output of shape (N, L_t, E_q)
+            If need_weights=False: attn_output (N, L_q, E_q)
+            If need_weights=True:  (attn_output, attn_weights)
+                attn_weights shape: (N, nheads, L_q, L_kv)
         """
         # Step 1. Apply input projection
         if self._qkv_same_embed_dim:
@@ -142,19 +144,55 @@ class MultiHeadAttention(nn.Module):
             else:
                 combined_mask = combined_mask + padding_mask_float
 
-        # Step 4. Run SDPA
-        attn_output = F.scaled_dot_product_attention(
-            query,
-            key,
-            value,
-            attn_mask=combined_mask,  # 传入组合后的 mask
-            dropout_p=self.dropout if self.training else 0.0,
-            is_causal=is_causal if combined_mask is None else False,  # 如果有 combined_mask，不用 is_causal
-        )
+        # Handle is_causal when no explicit mask provided
+        if is_causal:
+            L_q, L_kv = query.size(-2), key.size(-2)
+            causal_mask = torch.triu(
+                torch.ones(L_q, L_kv, device=query.device, dtype=query.dtype),
+                diagonal=1,
+            ) * float("-inf")
+            causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)  # (1, 1, L_q, L_kv)
+            if combined_mask is None:
+                combined_mask = causal_mask
+            else:
+                combined_mask = combined_mask + causal_mask
 
+        # Step 4. Attention
+        if not need_weights:
+            # 训练时走高性能 SDPA 路径
+            attn_output = F.scaled_dot_product_attention(
+                query,
+                key,
+                value,
+                attn_mask=combined_mask,
+                dropout_p=self.dropout if self.training else 0.0,
+                is_causal=False,  # 已经融入 combined_mask
+            )
+            attn_weights = None
+        else:
+            # 推理时手动计算，以获取 attention weights
+            scale = math.sqrt(self.E_head)
+            # (N, nheads, L_q, E_head) @ (N, nheads, E_head, L_kv) -> (N, nheads, L_q, L_kv)
+            attn_scores = torch.matmul(query, key.transpose(-2, -1)) / scale
+
+            if combined_mask is not None:
+                attn_scores = attn_scores + combined_mask
+
+            attn_weights = F.softmax(attn_scores, dim=-1)
+
+            if self.training and self.dropout > 0.0:
+                attn_weights = F.dropout(attn_weights, p=self.dropout)
+
+            # (N, nheads, L_q, L_kv) @ (N, nheads, L_kv, E_head) -> (N, nheads, L_q, E_head)
+            attn_output = torch.matmul(attn_weights, value)
+
+        # Step 5. Merge heads and output projection
+        # (N, nheads, L_q, E_head) -> (N, L_q, E_total)
         attn_output = attn_output.transpose(1, 2).flatten(-2)
 
-        # Step 5. Apply output projection
+        # Step 6. Apply output projection
         attn_output = self.out_proj(attn_output)
 
+        if need_weights:
+            return attn_output, attn_weights  # attn_weights: (N, nheads, L_q, L_kv)
         return attn_output

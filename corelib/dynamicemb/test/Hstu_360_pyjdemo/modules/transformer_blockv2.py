@@ -1,6 +1,6 @@
 import copy
 import math
-from typing import Optional, Callable
+from typing import Optional, Callable, List, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -33,8 +33,8 @@ class TransformerBlock(nn.Module):
         super().__init__()
         factory_kwargs = {"device": device, "dtype": dtype}
 
-        # Positional Encoding
-        self.pos_encoder = PositionalEncoding(d_model, dropout, max_seq_length)
+        # # Positional Encoding
+        # self.pos_encoder = PositionalEncoding(d_model, dropout, max_seq_length)
 
         encoder_layer = TransformerEncoderLayer(
             d_model=d_model,
@@ -59,21 +59,34 @@ class TransformerBlock(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        attn_mask: Optional[Tensor] = None,           # causal mask 等: (L, L)
-        src_key_padding_mask: Optional[Tensor] = None, # padding mask: (N, L), True=mask
+        attn_mask: Optional[Tensor] = None,
+        src_key_padding_mask: Optional[Tensor] = None,
         is_causal: bool = False,
-    ) -> torch.Tensor:
-        # Add positional encoding
-        x = self.pos_encoder(x)
-                
-        output = self.encoder(
+        need_weights: bool = False,
+    ) -> Union[Tensor, Tuple[Tensor, List[Tensor]]]:
+        """
+        Args:
+            x: (N, L, d_model)
+            attn_mask: (L, L) or (N, L, L)
+            src_key_padding_mask: (N, L), True = masked position
+            is_causal: whether to apply causal mask
+            need_weights: if True, also return per-layer attention weights
+
+        Returns:
+            If need_weights=False: output (N, L, d_model)
+            If need_weights=True:  (output, all_attn_weights)
+                all_attn_weights: List of (N, nheads, L, L), one per layer
+        """
+        # # Add positional encoding
+        # x = self.pos_encoder(x)
+
+        return self.encoder(
             x,
             mask=attn_mask,
             src_key_padding_mask=src_key_padding_mask,
             is_causal=is_causal,
+            need_weights=need_weights,
         )
-
-        return output
 
 
 class TransformerEncoder(nn.Module):
@@ -88,17 +101,30 @@ class TransformerEncoder(nn.Module):
         mask: Optional[Tensor] = None,
         src_key_padding_mask: Optional[Tensor] = None,
         is_causal: bool = False,
-    ):
+        need_weights: bool = False,
+    ) -> Union[Tensor, Tuple[Tensor, List[Tensor]]]:
         output = src
+        all_attn_weights: List[Tensor] = []
+
         for layer in self.layers:
-            output = layer(
+            result = layer(
                 output,
                 src_mask=mask,
                 src_key_padding_mask=src_key_padding_mask,
                 is_causal=is_causal,
+                need_weights=need_weights,
             )
+            if need_weights:
+                output, attn_weights = result
+                all_attn_weights.append(attn_weights)
+            else:
+                output = result
+
         if self.norm is not None:
             output = self.norm(output)
+
+        if need_weights:
+            return output, all_attn_weights
         return output
 
 
@@ -109,6 +135,7 @@ class PositionalEncoding(nn.Module):
     
     def __init__(self, d_model: int, dropout: float = 0, max_len: int = 512):
         super().__init__()
+        assert d_model % 2 == 0, f"PositionalEncoding requires even d_model, got {d_model}"
         self.dropout = nn.Dropout(p=dropout)
         
         # Create positional encoding matrix
