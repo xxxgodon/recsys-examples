@@ -70,7 +70,7 @@ from modules.metric import CustomAUC, CustomCOPC, StreamingAUC, StreamingCOPC, M
 from dataclasses import dataclass
 # from modules.MLP import MLP
 from modules.PReLU_DNN import MLP
-from modules.TransformerBlock import TransformerBlock
+from modules.TransformerBlockv2 import TransformerBlock
 import time
 from datetime import datetime, timedelta
 from utils.common import jagged_to_padded_dense
@@ -117,6 +117,7 @@ def parse_args():
     parser.add_argument("--train", action="store_true")
     parser.add_argument("--train_days", action="store_true")
     parser.add_argument("--test", action="store_true")
+    parser.add_argument("--analyze", action="store_true")
     parser.add_argument("--eval", action="store_true")
     parser.add_argument("--load", action="store_true")
     parser.add_argument("--dump", action="store_true")
@@ -645,6 +646,7 @@ class TransformerModel(nn.Module):
     def forward(
         self, 
         kjt: KeyedJaggedTensor, 
+        need_weights: bool = False,
     ) -> torch.Tensor:
 
         # embedding lookup
@@ -668,11 +670,18 @@ class TransformerModel(nn.Module):
         # ).bool()                                    # [L+1, L+1]
         
         # transformer block
-        output_tokens = self._transformer_module(   # [B, L+1, token_dim]
+        transformer_out = self._transformer_module(   # [B, L+1, token_dim]
             input_tokens, 
             attn_mask=None,
             src_key_padding_mask=~padding_mask, # 注意：这里需要取反 这里True位置的元素会被mask掉
+            need_weights=need_weights,
         )
+
+        if need_weights:
+            output_tokens, all_attn_weights = transformer_out
+        else:
+            output_tokens = transformer_out
+            all_attn_weights = None
 
         candidate_token_output = output_tokens[:, -self.candidate_token_num:, :]    # [B, candidate_token_num, token_dim]
         candidate_token_output = candidate_token_output.flatten(start_dim=1)        # [B, candidate_token_num*token_dim]
@@ -690,6 +699,8 @@ class TransformerModel(nn.Module):
 
         predict_ctr = torch.sigmoid(logits)  # [B, 1]
         
+        if need_weights:
+            return predict_ctr.squeeze(-1), logits.squeeze(-1), all_attn_weights
         return predict_ctr.squeeze(-1), logits.squeeze(-1)
 
     def _initialize_embedding_dimensions(self):
@@ -1128,7 +1139,9 @@ def train_one_epoch(model, train_dataloader, dense_optimizer, loss_fn, auc_metri
             # 构造占位 batch
             features, labels = placeholder_features, placeholder_labels
 
-        predict_ctr, logits = model(features)
+        predict_ctr, logits = model(features, need_weights=False)
+        # debugging
+        # predict_ctr, logits, all_attn_weights = model(features, need_weights=True)
 
         # ====== 占位 loss 必须为 0 ======
         if has_local:
@@ -1250,7 +1263,7 @@ def test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epo
                 # 构造占位 batch
                 features, labels = placeholder_features, placeholder_labels
 
-            predict_ctr, logits = model(features)
+            predict_ctr, logits = model(features, need_weights=False)
 
             # ====== 占位 loss 必须为 0 ======
             if has_local:
@@ -1304,6 +1317,135 @@ def test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epo
         if local_rank == 0:
             print(f"One Batch AVG Spend Time: {avg_time_spend}")
 
+def analyze_one_epoch(
+    model, test_dataloader, loss_fn, auc_metric, copc_metric, 
+    epoch, total_epochs, day: str, out_base_dir: str,
+    max_analyze_batches: int = 10,  # 只分析前 N 个 batch
+    args=None,  # 传入 args 以便可视化使用
+    ):
+    from utils.attention_analyzer import attention_analyzer
+    model.eval()
+    time_spend = 0
+    step = 0
+
+    # 将可迭代对象（test_dataloader）转换为迭代器 后续可以通过next()手动获取数据 注意这里可以预获取下下个batch的数据
+    loader_it = iter(test_dataloader)
+    # 当前计算设备是否有batch数据的状态flag
+    has_local = True
+
+    global placeholder_features, placeholder_labels
+
+    # ---- prdict output ----
+    out_dir = os.path.join(out_base_dir, str(day))
+    os.makedirs(out_dir, exist_ok=True)
+    attn_dir = os.path.join(out_dir, "attention_weights")
+    os.makedirs(attn_dir, exist_ok=True)
+
+    # 收集用于可视化的 attention weights
+    collected_attn = []  # List of dict
+
+    with torch.inference_mode():
+        while True:
+            st = time.time()
+
+            # 尝试获取当前计算设备的batch数据
+            if has_local:
+                batch = next(loader_it)
+                if batch is None:  # dataloader 发出结束信号
+                    has_local = False
+            else:
+                batch = None
+            
+            # 汇总每个计算设备的local_has状态 即查看每个rank还有没有数据
+            # local_has == 1 or 0
+            local_has = torch.tensor(int(has_local), device=device, dtype=torch.int64)
+            total_has = local_has.clone()
+            # 在每个计算设备（GPU）上汇总所有计算设备的状态
+            dist.all_reduce(total_has, op=dist.ReduceOp.SUM)
+
+            # print(f"rank {local_rank} step={step} has_local={has_local} total_has={total_has}")
+
+            # 如果所有设备都没有数据了 -> 结束测试
+            if total_has.item() == 0:
+                break
+
+            # ---- forward ----
+            if has_local:
+                features, labels, keys = batch
+                features = features.to(device, non_blocking=True)
+                labels = labels.to(device, non_blocking=True)
+            else:
+                # 构造占位 batch
+                features, labels = placeholder_features, placeholder_labels
+
+            # 只对前 max_analyze_batches 个 batch 提取 attention weights
+            do_attn = has_local and (step < max_analyze_batches)
+
+            if do_attn:
+                predict_ctr, logits, all_attn_weights = model(features, need_weights=True)
+            else:
+                predict_ctr, logits = model(features, need_weights=False)
+                all_attn_weights = None
+
+            # ---- 保存 attention weights ----
+            if do_attn and all_attn_weights is not None:
+                # all_attn_weights: List[Tensor], 每个 [B, H, L, L]
+                # 只保存第一个样本，减少存储
+                sample_attn = {
+                    f"layer_{layer_idx}": w[0].cpu().numpy()  # [H, L, L]
+                    for layer_idx, w in enumerate(all_attn_weights)
+                }
+                collected_attn.append({
+                    "step": step,
+                    "key": keys[0] if keys else f"step_{step}",
+                    "label": int(labels[0].item()),
+                    "pctr": float(predict_ctr[0].item()),
+                    "attn": sample_attn,
+                })
+
+            if step != 0:
+                tt = time.time() - st
+                #print("Finish One Batch...  Spend (s)", tt)
+                time_spend += tt
+
+            step += 1
+
+            # ---- 采集够了就停止采集，但不 break 循环 ----
+            # 通过 all_reduce 通知所有 rank 一起退出
+            local_done = torch.tensor(
+                int(step >= max_analyze_batches), 
+                device=device, dtype=torch.int64
+            )
+            total_done = local_done.clone()
+            dist.all_reduce(total_done, op=dist.ReduceOp.MIN)
+            # 只有所有 rank 都达到 max_analyze_batches 才退出
+            if total_done.item() == 1:
+                break
+        
+        dist.barrier()
+
+        #  ---- 保存 attention weights 到文件 ----
+        if collected_attn and local_rank == 0:
+            attn_save_path = os.path.join(attn_dir, f"attn_samples_rank{local_rank}.npz")
+            save_dict = {}
+            for idx, item in enumerate(collected_attn):
+                for layer_name, attn_np in item["attn"].items():
+                    save_dict[f"sample_{idx}_{layer_name}"] = attn_np
+                # 保存 metadata
+                save_dict[f"sample_{idx}_meta"] = np.array([item["label"], item["pctr"]])
+            np.savez_compressed(attn_save_path, **save_dict)
+            print(f"Saved {len(collected_attn)} attention samples to {attn_save_path}")
+
+            # ---- 可视化 ----
+            attention_analyzer(
+                collected_attn, attn_dir,
+                candidate_token_num=args.candidate_token_num,
+                context_token_num=args.context_token_num,
+            )
+
+        avg_time_spend = time_spend / (step - 1)
+        if local_rank == 0:
+            print(f"ANALYZING: One Batch AVG Spend Time: {avg_time_spend}")
 
 def train(args):
     keys_config = {}
@@ -1425,7 +1567,7 @@ def train_days(args):
 
 
         train_dataloader = ParquetArrowDataLoader(
-            data_dir=f"/data/pangyongjie/wjg_clouds/GR/dataset/parquet_data/{cur_str}",   # /data/pangyongjie/wjg_clouds/GR/dataset/parquet_data
+            data_dir=f"/data/pangyongjie/wjg_clouds/GR/dataset_new_only_click/parquet_data/{cur_str}",   # /data/pangyongjie/wjg_clouds/GR/dataset/parquet_data
             # data_dir=f"../../zzzc_5T/GR/dataset/parquet_data/{cur_str}",   # /data/pangyongjie/wjg_clouds/GR/dataset/parquet_data
             # data_dir=args.Train_data_path,
             # data_dir=f"/data/pangyongjie/clouds/GR/dataset/parquet_data/{cur_str}",
@@ -1547,7 +1689,7 @@ def test(args):
     # cur_path = os.path.join(args.model_save_dir, cur_str)
         
     test_dataloader = ParquetArrowDataLoader(
-        data_dir=f"/data/pangyongjie/wjg_clouds/GR/dataset/parquet_data/{cur_str}",   # /data/pangyongjie/wjg_clouds/GR/dataset/parquet_data
+        data_dir=f"/data/pangyongjie/wjg_clouds/GR/dataset_new_only_click/parquet_data/{cur_str}",   # /data/pangyongjie/wjg_clouds/GR/dataset/parquet_data
         # data_dir=f"../../zzzc_5T/GR/dataset/parquet_data/{cur_str}",   # /data/pangyongjie/wjg_clouds/GR/dataset/parquet_data
         # data_dir=args.Test_data_path,
         # data_dir=f"/data/pangyongjie/clouds/GR/dataset/parquet_data/{cur_str}",
@@ -1563,6 +1705,83 @@ def test(args):
     st = time.time()
     test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, 0, 1, day=cur_str, out_base_dir=args.out_base_dir,)
     print("Finish Testing...  Spend (s)", time.time() - st)
+
+# analay attention scores
+def analyze(args):
+    #循环指定数据集
+    start_date = datetime.strptime(args.date_start, "%Y-%m-%d")
+    end_date   = datetime.strptime(args.date_end, "%Y-%m-%d")
+
+    assert start_date.strftime("%Y-%m-%d") == end_date.strftime("%Y-%m-%d"), "start_date and end_date must be equal when testing.."
+
+    last_date = (start_date - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    keys_config = {}
+
+    keys_config["sparse"] = {s: (s + "_len") for s in args.ALL_SLOTS}
+    keys_config["label"] = "label"
+
+
+    # 创建模型
+    model = create_model(args, training=False)
+
+    dense_optimizer = Adam(
+        model.parameters(), 
+        lr=args.lr_dense,
+        betas=(0.99, 0.9999),
+        eps=1e-8,
+    )
+
+    # loss function
+    loss_fn = nn.BCEWithLogitsLoss(reduction="none")
+
+    # metrics
+    auc_metric = MaskedAUC().to(device)
+    copc_metric = StreamingCOPC().to(device)
+
+    last_model_path = os.path.join(args.model_save_dir, last_date, f"model_rank{dist.get_rank()}.pt")
+    last_emb_path = os.path.join(args.model_save_dir, last_date, "dynamicemb")
+    print(f"Load model from {last_model_path}")
+    print(f"Load emb from {last_emb_path}")
+
+    assert os.path.exists(last_model_path) and os.path.exists(last_emb_path), "Model is not Exist ..."
+    #load model
+    checkpoint = torch.load(
+        last_model_path,
+        weights_only=True,
+    )
+        
+    # Must set strict to False, as there is no embedding's weight in model.state_dict()
+    model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+    # dense_optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    
+    # all rank will load from the same files.
+    DynamicEmbLoad(last_emb_path, model, optim=True)
+        
+    dist.barrier(device_ids=[local_rank])
+        
+    cur = start_date
+    cur_str = cur.strftime("%Y-%m-%d") 
+    print(cur_str)       
+    # cur_path = os.path.join(args.model_save_dir, cur_str)
+        
+    test_dataloader = ParquetArrowDataLoader(
+        data_dir=f"/data/pangyongjie/wjg_clouds/GR/dataset_new_only_click/parquet_data/{cur_str}",   # /data/pangyongjie/wjg_clouds/GR/dataset/parquet_data
+        # data_dir=f"../../zzzc_5T/GR/dataset/parquet_data/{cur_str}",   # /data/pangyongjie/wjg_clouds/GR/dataset/parquet_data
+        # data_dir=args.Test_data_path,
+        # data_dir=f"/data/pangyongjie/clouds/GR/dataset/parquet_data/{cur_str}",
+        batch_size=args.batch_size,
+        keys_config=keys_config,
+        world_size=world_size,
+        rank=dist.get_rank(),
+        drop_last=False,
+        return_keys=True,
+    )
+
+    print("Start Analyzing...")
+    st = time.time()
+    analyze_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, 0, 1, day=cur_str, out_base_dir=args.out_base_dir, args=args)
+    print("Finish Analyzing...  Spend (s)", time.time() - st)
 
 # TODO
 def dump(args):
@@ -1604,6 +1823,8 @@ def main():
         train_days(args)
     if args.test:
         test(args)
+    if args.analyze:
+        analyze(args)
     if args.dump:
         dump(args)
     if args.load:
