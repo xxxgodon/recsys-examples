@@ -208,36 +208,6 @@ def parse_args():
     parser.add_argument(
         "--tpa_embedding_num", type=int, default=100000, help="number of embeddings for time, position, action features"
     )
-    # parser.add_argument(
-    #     "--profile_embedding_dim", type=int, default=8, help="profile embedding dimension"#TODO: modify
-    # )
-    # parser.add_argument(
-    #     "--profile_embedding_num", type=int, default=10000000, help="number of profile embeddings"#TODO: modify
-    # )
-    # parser.add_argument(
-    #     "--sequence_embedding_dim", type=int, default=8, help="sequence embedding dimension"
-    # )
-    # parser.add_argument(
-    #     "--sequence_embedding_num", type=int, default=300000000, help="number of sequence embeddings"
-    # )
-    # parser.add_argument(
-    #     "--context_embedding_dim", type=int, default=32, help="context embedding dimension"#TODO: modify
-    # )
-    # parser.add_argument(
-    #     "--context_embedding_num", type=int, default=10000000, help="number of context embeddings"#TODO: modify
-    # )
-    # parser.add_argument(
-    #     "--candidate_embedding_dim", type=int, default=8, help="candidate embedding dimension"
-    # )
-    # parser.add_argument(
-    #     "--candidate_embedding_num", type=int, default=300000000, help="number of candidate embeddings"
-    # )
-    # parser.add_argument(
-    #     "--pos_embedding_dim", type=int, default=8, help="position embedding dimension"
-    # )
-    # parser.add_argument(
-    #     "--pos_embedding_num", type=int, default=100, help="number of position embeddings"
-    # )
     parser.add_argument("--profile_mlp_dims", type=List[int], default=[64], help="dimension of profile MLP layer, with type List[int]")
     parser.add_argument("--sequence_mlp_dims", type=List[int], default=[64], help="dimension of sequence MLP layer, with type List[int]")
     parser.add_argument("--context_mlp_dims", type=List[int], default=[128], help="dimension of context MLP layer, with type List[int]")
@@ -586,79 +556,8 @@ def apply_dmp(model, args, training):
     return dmp
 
 def get_embedding_configs(args):
-    # # create EmbeddingConfig for each slot
-    # eb_configs = []
-    # for slot in args.ALL_SLOTS:
-    #     config = EmbeddingConfig(
-    #         name=f"sparse_table_slot_{slot}",
-    #         embedding_dim=args.embedding_dim,
-    #         # num_embeddings=args.num_embeddings_per_slot[slot],  # TODO: per slot num_embeddings
-    #         num_embeddings=args.num_embeddings,
-    #         feature_names=[str(slot)],
-    #         data_type=DataType.FP32,
-    #     )
-    #     eb_configs.append(config)
-
-    # eb_config = EmbeddingConfig(
-    #     name="sparse_table",
-    #     embedding_dim=args.embedding_dim,
-    #     num_embeddings=args.num_embeddings,  # `num_embeddings` in `EmbeddingConfig` is the sum of all slices on all GPUs for a table.
-    #     # feature_names=args.ALL_SLOTS,  # a list, means different features can share the same table
-    #     feature_names=[str(slot) for slot in args.ALL_SLOTS],  # a list, means different features can share the same table
-    #     data_type=DataType.FP32,  # weight or embedding's data type.
-    # )
-    # eb_configs = [eb_config]
-
-    # eb_config_tpa = EmbeddingConfig(
-    #     name="tpa_slots",
-    #     embedding_dim=args.tpa_embedding_dim,
-    #     num_embeddings=args.tpa_embedding_num,
-    #     feature_names=[str(slot) for slot in args.TPA_SLOTS],
-    #     data_type=DataType.FP32,
-    # )
-    
-    # eb_config_prof = EmbeddingConfig(
-    #     name="profile_slots",
-    #     embedding_dim=args.profile_embedding_dim,
-    #     num_embeddings=args.profile_embedding_num,
-    #     feature_names=[str(slot) for slot in args.PROFILE_SLOTS],
-    #     data_type=DataType.FP32,
-    # )
-
-    # eb_config_seq = EmbeddingConfig(
-    #     name="sequence_slots",
-    #     embedding_dim=args.sequence_embedding_dim,# args.sequence_embedding_dim,
-    #     num_embeddings=args.sequence_embedding_num,
-    #     feature_names=[str(slot) for slot in args.SEQ_SLOTS],
-    #     data_type=DataType.FP32,
-    # )
-
-    # eb_config_context = EmbeddingConfig(
-    #     name="context_slots",
-    #     embedding_dim=args.context_embedding_dim,
-    #     num_embeddings=args.context_embedding_num,
-    #     feature_names=[str(slot) for slot in args.CONTEXT_SLOTS],
-    #     data_type=DataType.FP32,
-    # )
-
-    # eb_config_candidate = EmbeddingConfig(
-    #     name="candidate_slots",
-    #     embedding_dim=args.candidate_embedding_dim,
-    #     num_embeddings=args.candidate_embedding_num,
-    #     feature_names=[str(slot) for slot in args.CANDIDATE_SLOTS],
-    #     data_type=DataType.FP32,
-    # )
-
-    # # TODO: customize pos slot embed num - pyj
-    # eb_config_pos = EmbeddingConfig(
-    #     name="pos_slot",
-    #     embedding_dim=args.pos_embedding_dim,
-    #     num_embeddings=args.pos_embedding_num,
-    #     feature_names=[str(args.POS_SLOT)],
-    #     data_type=DataType.FP32,
-    # )
-
     eb_configs = []
+
     eb_config_shared = EmbeddingConfig(
         name="sparse_table_wo_tpa",
         embedding_dim=args.embedding_dim,
@@ -666,6 +565,7 @@ def get_embedding_configs(args):
         feature_names=[str(slot) for slot in args.ALL_SLOTS_WO_TPA],  # a list, means different features can share the same table
         data_type=DataType.FP32,  # weight or embedding's data type.
     )
+
     eb_config_tpa = EmbeddingConfig(
         name="tpa_slots",
         embedding_dim=args.tpa_embedding_dim,
@@ -674,8 +574,6 @@ def get_embedding_configs(args):
         data_type=DataType.FP32,
     )
     eb_configs = [eb_config_shared, eb_config_tpa]
-
-    # eb_configs = [eb_config_tpa, eb_config_prof, eb_config_seq, eb_config_context, eb_config_candidate, eb_config_pos]
     
     return eb_configs
 
@@ -700,16 +598,6 @@ class TransformerModel(nn.Module):
         self.token_dim = args.token_dim
         self.candidate_token_num = args.candidate_token_num
         
-        # self.embedding_configs = get_embedding_configs(args)
-        # self.embedding_configs = get_embedding_configs(args)
-        # self.tpa_embedding_config, self.profile_embedding_config, self.sequence_embedding_config, self.context_embedding_config, self.candidate_embedding_config, self.pos_embedding_config = self.embedding_configs
-        # self.embedding_module = get_embedding_module(self.embedding_configs)
-        # self.tpa_embedding_module = get_embedding_module([self.tpa_embedding_config])
-        # self.profile_embedding_module = get_embedding_module([self.profile_embedding_config])
-        # self.sequence_embedding_module = get_embedding_module([self.sequence_embedding_config])
-        # self.context_embedding_module = get_embedding_module([self.context_embedding_config])
-        # self.candidate_embedding_module = get_embedding_module([self.candidate_embedding_config])
-        # self.pos_embedding_module = get_embedding_module([self.pos_embedding_config])
         # merge embedding table
         self.embedding_configs = get_embedding_configs(args)
         self.shared_embedding_config, self.tpa_embedding_config = self.embedding_configs
@@ -763,31 +651,10 @@ class TransformerModel(nn.Module):
         # embeddings_awaitable: EmbeddingCollectionAwaitable = self.embedding_module(kjt)
         # embeddings: Dict[str, JaggedTensor] = embeddings_awaitable.wait()
 
-        # tpa_embeddings: Dict[str, JaggedTensor] = self.tpa_embedding_module(kjt)
-        # # 首先验证是否可以这样给kjt分开
-        # # print(kjt['19'])
-        # # 注：这里没有对kjt进行分开处理，直接传入整个kjt就行，embedding_module会根据配置好的feature_names自动进行lookup
-        # profile_embeddings: Dict[str, JaggedTensor] = self.profile_embedding_module(kjt)
-        # # # debugging
-        # # print("[Debugging] profile_embeddings keys:", profile_embeddings.keys())
-        # # print("[Debugging] profile_embeddings:", profile_embeddings['66'])
-        # sequence_embeddings: Dict[str, JaggedTensor] = self.sequence_embedding_module(kjt)
-        # context_embeddings: Dict[str, JaggedTensor] = self.context_embedding_module(kjt)
-        # candidate_embeddings: Dict[str, JaggedTensor] = self.candidate_embedding_module(kjt)
-        # pos_embedding: JaggedTensor = self.pos_embedding_module(kjt)
-        # embeddings: Dict[str, JaggedTensor] = self.embedding_module(kjt)
-
+        # 注：这里没有对kjt进行分开处理，直接传入整个kjt就行，embedding_module会根据配置好的feature_names自动进行lookup
         shared_embeddings: Dict[str, JaggedTensor] = self.shared_embedding_module(kjt)
         tpa_embeddings: Dict[str, JaggedTensor] = self.tpa_embedding_module(kjt)
 
-        # input_tokens, padding_mask = self._preprocess(embeddings)
-        # input_tokens, padding_mask = self._preprocess(
-        #     tpa_embeddings,
-        #     profile_embeddings,
-        #     sequence_embeddings,
-        #     context_embeddings,
-        #     candidate_embeddings,
-        # )
         input_tokens, padding_mask = self._preprocess(
             shared_embeddings,
             tpa_embeddings,
@@ -952,12 +819,6 @@ class preprocessor(nn.Module):
 
     def forward(
         self,
-        # embeddings: Dict[str, JaggedTensor],
-        # tpa_embeddings: Dict[str, JaggedTensor],
-        # profile_embeddings: Dict[str, JaggedTensor],
-        # sequence_embeddings: Dict[str, JaggedTensor],
-        # context_embeddings: Dict[str, JaggedTensor],
-        # candidate_embeddings: Dict[str, JaggedTensor],
         shared_embeddings: Dict[str, JaggedTensor],
         tpa_embeddings: Dict[str, JaggedTensor],
     ):
