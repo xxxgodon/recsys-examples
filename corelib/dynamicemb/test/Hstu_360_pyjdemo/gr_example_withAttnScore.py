@@ -961,10 +961,6 @@ class preprocessor(nn.Module):
         diag_indices = torch.arange(K, device=input_tokens.device)
         attn_mask[non_cand_len + diag_indices, non_cand_len + diag_indices] = False
 
-        # 3) candidate 行恢复：能看见 profile/seq/ctx（左侧 non_cand_len 列）
-        #    第1步把 candidate 行的左侧也设成了 True，需要恢复
-        attn_mask[non_cand_len:, :non_cand_len] = False
-
         return  input_tokens, padding_mask, attn_mask
 
 class SlotMLP(nn.Module):
