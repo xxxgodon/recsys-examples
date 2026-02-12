@@ -71,10 +71,8 @@ def attention_analyzer(collected_attn, save_dir, max_samples=5, candidate_token_
             ax.set_ylabel("Query position")
             fig.colorbar(im, ax=ax)
             
-            # 标注 token 区域
-            # token 布局: [1 profile] [L seq] [context_token_num context] [candidate_token_num candidate]
-            # 添加分界线标注
-            _add_region_annotations(ax, seq_len)
+            # 标注 token 区域 —— 传入实际的 token 数量
+            _add_region_annotations(ax, seq_len, candidate_token_num, context_token_num)
             
             plt.tight_layout()
             fname = os.path.join(save_dir, f"sample_{idx}_{layer_name}_avg.png")
@@ -92,15 +90,29 @@ def attention_analyzer(collected_attn, save_dir, max_samples=5, candidate_token_
     print(f"[Visualize] Saved attention plots to {save_dir}")
 
 
-def _add_region_annotations(ax, total_len):
-    """在 attention heatmap 上添加 token 区域标注线。"""
-    # 大致标注：profile=1, seq=动态, context=1~2, candidate=8
-    # 这里只画 profile 边界和 candidate 起始位置
-    ax.axhline(y=0.5, color='red', linestyle='--', alpha=0.5, linewidth=1)
-    ax.axvline(x=0.5, color='red', linestyle='--', alpha=0.5, linewidth=1)
+def _add_region_annotations(ax, total_len, candidate_token_num=8, context_token_num=1):
+    """在 attention heatmap 上添加 token 区域分界线。
     
-    # 在左上角标注 Profile
-    ax.text(0, 0, "P", color='red', fontsize=8, ha='center', va='center', fontweight='bold')
+    Token 布局: [1 profile] [L seq] [context_token_num context] [candidate_token_num candidate]
+    """
+    profile_end = 1
+    candidate_start = total_len - candidate_token_num
+    context_start = candidate_start - context_token_num
+    
+    # 画分界线（水平 + 垂直）
+    boundaries = [
+        (profile_end - 0.5, 'P|S', '#e74c3c'),  # Profile|Seq
+        (context_start - 0.5, 'S|Ctx', '#2ecc71'),    # Seq|Ctx
+        (candidate_start - 0.5, 'Ctx|C', '#f39c12'), # Ctx|Cand
+    ]
+    
+    for pos, label, color in boundaries:
+        if pos > 0 and pos < total_len:
+            ax.axhline(y=pos, color=color, linestyle='--', alpha=0.7, linewidth=1.5)
+            ax.axvline(x=pos, color=color, linestyle='--', alpha=0.7, linewidth=1.5)
+            # 在右侧标注区域名
+            ax.text(total_len + 0.5, pos, label, color=color, fontsize=7,
+                    va='center', ha='left', fontweight='bold')
 
 
 def _plot_candidate_to_seq_attention(
