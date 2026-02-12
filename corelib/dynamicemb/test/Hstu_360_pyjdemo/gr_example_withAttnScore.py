@@ -657,7 +657,7 @@ class TransformerModel(nn.Module):
         shared_embeddings: Dict[str, JaggedTensor] = self.shared_embedding_module(kjt)
         tpa_embeddings: Dict[str, JaggedTensor] = self.tpa_embedding_module(kjt)
 
-        input_tokens, padding_mask = self._preprocess(
+        input_tokens, padding_mask, attn_mask = self._preprocess(
             shared_embeddings,
             tpa_embeddings,
         )
@@ -672,7 +672,7 @@ class TransformerModel(nn.Module):
         # transformer block
         transformer_out = self._transformer_module(   # [B, L+1, token_dim]
             input_tokens, 
-            attn_mask=None,
+            attn_mask=attn_mask,
             src_key_padding_mask=~padding_mask, # 注意：这里需要取反 这里True位置的元素会被mask掉
             need_weights=need_weights,
         )
@@ -934,7 +934,38 @@ class preprocessor(nn.Module):
         # 拼接
         padding_mask = torch.cat([profile_mask, padding_mask, context_mask, candidate_mask], dim=1)  # [batch_size, 1+L+context_token_num+candidate_token_num]
 
-        return  input_tokens, padding_mask
+        # ---- attn mask ----
+        # 1. profile/seq/ctx 之间互相可见，但看不见任何 candidate
+        # 2. candidate_i 能看见 profile/seq/ctx + 自己，看不见其他 candidate
+        '''
+            举例 T=6 (3 non-cand + 3 cand), True=屏蔽
+                     P   S   Ctx  C0  C1  C2
+            P      [ F   F   F    T   T   T ]  ← profile 看不见所有 candidate
+            S      [ F   F   F    T   T   T ]  ← seq 看不见所有 candidate
+            Ctx    [ F   F   F    T   T   T ]  ← ctx 看不见所有 candidate
+            C0     [ F   F   F    F   T   T ]  ← cand0 能看自己，看不见 cand1/2
+            C1     [ F   F   F    T   F   T ]  ← cand1 能看自己，看不见 cand0/2
+            C2     [ F   F   F    T   T   F ]  ← cand2 能看自己，看不见 cand0/1
+        '''
+        T = input_tokens.shape[1]  # 总 token 数: 1 + L + context_token_num + candidate_token_num
+        K = self.candidate_token_num  # candidate token 数
+        non_cand_len = T - K  # profile + seq + context 的总长度
+
+        # 初始化全 False（全部可见）
+        attn_mask = torch.zeros(T, T, dtype=torch.bool, device=input_tokens.device)
+
+        # 1) 所有行都看不见 candidate 区域（右侧 K 列全部屏蔽）
+        attn_mask[:, non_cand_len:] = True
+
+        # 2) candidate 行恢复：能看见自己（对角线）
+        diag_indices = torch.arange(K, device=input_tokens.device)
+        attn_mask[non_cand_len + diag_indices, non_cand_len + diag_indices] = False
+
+        # 3) candidate 行恢复：能看见 profile/seq/ctx（左侧 non_cand_len 列）
+        #    第1步把 candidate 行的左侧也设成了 True，需要恢复
+        attn_mask[non_cand_len:, :non_cand_len] = False
+
+        return  input_tokens, padding_mask, attn_mask
 
 class SlotMLP(nn.Module):
     def __init__(
