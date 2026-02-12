@@ -5,7 +5,8 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 
-def attention_analyzer(collected_attn, save_dir, max_samples=5, candidate_token_num=8, context_token_num=1):
+
+def attention_analyzer(collected_attn, save_dir, max_samples=5, candidate_token_num=8, context_token_num=1, min_seq_len=5):
     """
     可视化 attention weights 并保存为图片。
     
@@ -15,13 +16,26 @@ def attention_analyzer(collected_attn, save_dir, max_samples=5, candidate_token_
             - attn: {layer_0: [H, L, L], layer_1: [H, L, L], ...}
         save_dir: 保存图片的目录
         max_samples: 最多可视化几个样本
+        min_seq_len: 最小序列长度，低于此长度的样本跳过可视化
     """
     
-    for idx, item in enumerate(collected_attn[:max_samples]):
-        num_layers = len(item["attn"])
+    plotted = 0
+    for idx, item in enumerate(collected_attn):
+        if plotted >= max_samples:
+            break
+
         sample_key = item["key"]
         sample_label = item["label"]
         sample_pctr = item["pctr"]
+        
+        # 取任意一层的 L 来计算实际 seq 长度
+        first_attn = next(iter(item["attn"].values()))
+        L = first_attn.shape[1]
+        actual_seq_len = L - 1 - context_token_num - candidate_token_num  # 减去 profile + context + candidate
+        
+        if actual_seq_len < min_seq_len:
+            print(f"[Visualize] Skipping sample {idx} (key={sample_key}): seq_len={actual_seq_len} < {min_seq_len}")
+            continue
         
         for layer_name, attn_matrix in item["attn"].items():
             # attn_matrix: [num_heads, L, L]
@@ -35,7 +49,7 @@ def attention_analyzer(collected_attn, save_dir, max_samples=5, candidate_token_
                 squeeze=False,
             )
             fig.suptitle(
-                f"Sample: {sample_key} | Label: {sample_label} | pCTR: {sample_pctr:.4f}\n{layer_name}",
+                f"Sample: {sample_key} | Label: {sample_label} | pCTR: {sample_pctr:.4f} | seq_len: {actual_seq_len}\n{layer_name}",
                 fontsize=14,
             )
             
@@ -64,7 +78,7 @@ def attention_analyzer(collected_attn, save_dir, max_samples=5, candidate_token_
             fig, ax = plt.subplots(figsize=(8, 6))
             im = ax.imshow(avg_attn, cmap="viridis", aspect="auto")
             ax.set_title(
-                f"Avg Attention | {sample_key} | Label={sample_label} pCTR={sample_pctr:.4f}\n{layer_name}",
+                f"Avg Attention | {sample_key} | Label={sample_label} pCTR={sample_pctr:.4f} | seq_len: {actual_seq_len}\n{layer_name}",
                 fontsize=12,
             )
             ax.set_xlabel("Key position")
@@ -85,9 +99,21 @@ def attention_analyzer(collected_attn, save_dir, max_samples=5, candidate_token_
                 sample_label, sample_pctr, save_dir,
                 candidate_token_num=candidate_token_num,
                 context_token_num=context_token_num,
+                actual_seq_len=actual_seq_len,
             )
+
+            # ========== 图4: 分区域注意力占比 (饼图 + 条形图) ==========
+            _plot_region_attention_summary(
+                attn_matrix, idx, layer_name, sample_key,
+                sample_label, sample_pctr, save_dir,
+                candidate_token_num=candidate_token_num,
+                context_token_num=context_token_num,
+                actual_seq_len=actual_seq_len,
+            )
+        
+        plotted += 1
     
-    print(f"[Visualize] Saved attention plots to {save_dir}")
+    print(f"[Visualize] Saved {plotted} attention samples to {save_dir}")
 
 
 def _add_region_annotations(ax, total_len, candidate_token_num=8, context_token_num=1):
@@ -120,6 +146,7 @@ def _plot_candidate_to_seq_attention(
     sample_label, sample_pctr, save_dir,
     candidate_token_num=8,
     context_token_num=1,
+    actual_seq_len=0,
 ):
     """
     绘制 candidate tokens 对所有 position 的 attention 分布（bar chart）。
@@ -131,36 +158,40 @@ def _plot_candidate_to_seq_attention(
     # token 布局: [1 profile] [seq_len seq] [context_token_num context] [candidate_token_num candidate]
     candidate_start = L - candidate_token_num
     context_start = candidate_start - context_token_num
-    profile_end = 1  # profile 只有 1 个 token
-    
-    # candidate tokens 对所有 positions 的平均注意力
-    cand_to_all = avg_attn[candidate_start:, :].mean(axis=0)  # [L]
-    
-    fig, ax = plt.subplots(figsize=(min(20, L * 0.15 + 4), 4))
+    profile_end = 1  # profile token 固定在第一个位置
+    # candidate tokens 对所有位置的平均 attention 权重（先对 head 取平均，再对 candidate tokens 取平均）
+    cand_to_all = avg_attn[candidate_start:, :].mean(axis=0)
+
+    # ---- 调试打印 ----
+    print(f"[DEBUG] sample={sample_idx} {layer_name} actual_seq_len={actual_seq_len}")
+    print(f"  L={L}, profile_end={profile_end}, context_start={context_start}, candidate_start={candidate_start}")
+    print(f"  cand→profile  : {cand_to_all[:profile_end].sum():.6f}")
+    print(f"  cand→sequence : {cand_to_all[profile_end:context_start].sum():.6f}")
+    print(f"  cand→context  : {cand_to_all[context_start:candidate_start].sum():.6f}")
+    print(f"  cand→candidate: {cand_to_all[candidate_start:].sum():.6f}")
+
+    colors = _get_region_colors(L, profile_end, context_start, candidate_start)
     positions = np.arange(L)
-    
-    # 颜色编码不同区域
-    colors = []
-    for p in positions:
-        if p < profile_end:
-            colors.append('#e74c3c')      # profile: 红
-        elif p < context_start:
-            colors.append('#3498db')      # sequence: 蓝
-        elif p < candidate_start:
-            colors.append('#2ecc71')      # context: 绿
-        else:
-            colors.append('#f39c12')      # candidate: 橙
-    
-    ax.bar(positions, cand_to_all, color=colors, alpha=0.8, width=0.8)
-    ax.set_xlabel("Token Position")
-    ax.set_ylabel("Avg Attention Weight")
-    ax.set_title(
-        f"Candidate → All Positions | {sample_key} | "
-        f"Label={sample_label} pCTR={sample_pctr:.4f}\n{layer_name}",
-        fontsize=11,
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(min(24, L * 0.15 + 4), 8), sharex=True)
+    fig.suptitle(
+        f"Candidate → All | {sample_key} | Label={sample_label} pCTR={sample_pctr:.4f} | seq_len={actual_seq_len}\n{layer_name}",
+        fontsize=12,
     )
-    
-    # 图例
+
+    # 线性
+    ax1.bar(positions, cand_to_all, color=colors, alpha=0.8, width=0.8)
+    ax1.set_ylabel("Attention Weight (linear)")
+    _add_bar_region_lines(ax1, profile_end, context_start, candidate_start)
+
+    # log
+    cand_log = np.where(cand_to_all > 0, cand_to_all, 1e-10)
+    ax2.bar(positions, cand_log, color=colors, alpha=0.8, width=0.8)
+    ax2.set_yscale('log')
+    ax2.set_ylabel("Attention Weight (log)")
+    ax2.set_xlabel("Token Position")
+    _add_bar_region_lines(ax2, profile_end, context_start, candidate_start)
+
     from matplotlib.patches import Patch
     legend_elements = [
         Patch(facecolor='#e74c3c', label='Profile'),
@@ -168,9 +199,81 @@ def _plot_candidate_to_seq_attention(
         Patch(facecolor='#2ecc71', label='Context'),
         Patch(facecolor='#f39c12', label='Candidate (self)'),
     ]
-    ax.legend(handles=legend_elements, loc='upper right', fontsize=9)
-    
+    ax1.legend(handles=legend_elements, loc='upper right', fontsize=9)
+
     plt.tight_layout()
     fname = os.path.join(save_dir, f"sample_{sample_idx}_{layer_name}_cand2all_bar.png")
     fig.savefig(fname, dpi=150, bbox_inches='tight')
     plt.close(fig)
+
+
+def _plot_region_attention_summary(
+    attn_matrix, sample_idx, layer_name, sample_key,
+    sample_label, sample_pctr, save_dir,
+    candidate_token_num=8,
+    context_token_num=1,
+    actual_seq_len=0,
+):
+    """饼图 + 水平条形图：分区域注意力占比。"""
+    num_heads, L, _ = attn_matrix.shape
+    avg_attn = attn_matrix.mean(axis=0)
+
+    candidate_start = L - candidate_token_num
+    context_start = candidate_start - context_token_num
+    profile_end = 1
+
+    cand_to_all = avg_attn[candidate_start:, :].mean(axis=0)
+
+    regions = {
+        'Profile':   cand_to_all[:profile_end].sum(),
+        'Sequence':  cand_to_all[profile_end:context_start].sum(),
+        'Context':   cand_to_all[context_start:candidate_start].sum(),
+        'Candidate': cand_to_all[candidate_start:].sum(),
+    }
+    region_colors = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12']
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+    fig.suptitle(
+        f"Region Summary | {sample_key} | Label={sample_label} pCTR={sample_pctr:.4f} | seq_len={actual_seq_len}\n{layer_name}",
+        fontsize=11,
+    )
+
+    values = list(regions.values())
+    labels_pie = [f"{k}\n{v:.4f}" for k, v in regions.items()]
+    ax1.pie(values, labels=labels_pie, colors=region_colors, autopct='%1.1f%%', startangle=90)
+    ax1.set_title("Pie", fontsize=10)
+
+    y_pos = np.arange(len(regions))
+    ax2.barh(y_pos, values, color=region_colors, alpha=0.8)
+    ax2.set_yticks(y_pos)
+    ax2.set_yticklabels(list(regions.keys()))
+    ax2.set_xlabel("Total Attention Weight")
+    ax2.set_title("Bar", fontsize=10)
+    for i, v in enumerate(values):
+        ax2.text(v + 0.001, i, f"{v:.4f}", va='center', fontsize=9)
+
+    plt.tight_layout()
+    fname = os.path.join(save_dir, f"sample_{sample_idx}_{layer_name}_region_summary.png")
+    fig.savefig(fname, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
+
+# ================ 工具函数 ================
+
+def _get_region_colors(L, profile_end, context_start, candidate_start):
+    colors = []
+    for p in range(L):
+        if p < profile_end:
+            colors.append('#e74c3c')
+        elif p < context_start:
+            colors.append('#3498db')
+        elif p < candidate_start:
+            colors.append('#2ecc71')
+        else:
+            colors.append('#f39c12')
+    return colors
+
+
+def _add_bar_region_lines(ax, profile_end, context_start, candidate_start):
+    for pos in [profile_end - 0.5, context_start - 0.5, candidate_start - 0.5]:
+        ax.axvline(x=pos, color='gray', linestyle=':', alpha=0.5, linewidth=1)
