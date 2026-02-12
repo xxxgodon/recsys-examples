@@ -1320,7 +1320,7 @@ def test_one_epoch(model, test_dataloader, loss_fn, auc_metric, copc_metric, epo
 def analyze_one_epoch(
     model, test_dataloader, loss_fn, auc_metric, copc_metric, 
     epoch, total_epochs, day: str, out_base_dir: str,
-    max_analyze_batches: int = 10,  # 只分析前 N 个 batch
+    max_analyze_batches: int = 1,  # 只分析前 N 个 batch
     args=None,  # 传入 args 以便可视化使用
     ):
     from utils.attention_analyzer import attention_analyzer
@@ -1390,18 +1390,33 @@ def analyze_one_epoch(
             # ---- 保存 attention weights ----
             if do_attn and all_attn_weights is not None:
                 # all_attn_weights: List[Tensor], 每个 [B, H, L, L]
-                # 只保存第一个样本，减少存储
-                sample_attn = {
-                    f"layer_{layer_idx}": w[0].cpu().numpy()  # [H, L, L]
-                    for layer_idx, w in enumerate(all_attn_weights)
-                }
-                collected_attn.append({
-                    "step": step,
-                    "key": keys[0] if keys else f"step_{step}",
-                    "label": int(labels[0].item()),
-                    "pctr": float(predict_ctr[0].item()),
-                    "attn": sample_attn,
-                })
+                # # 只保存第一个样本，减少存储
+                # sample_attn = {
+                #     f"layer_{layer_idx}": w[0].cpu().numpy()  # [H, L, L]
+                #     for layer_idx, w in enumerate(all_attn_weights)
+                # }
+                # collected_attn.append({
+                #     "step": step,
+                #     "key": keys[0] if keys else f"step_{step}",
+                #     "label": int(labels[0].item()),
+                #     "pctr": float(predict_ctr[0].item()),
+                #     "attn": sample_attn,
+                # })
+                # -- 保存整个 batch 的 attention 权重 --
+                B_cur = labels.size(0)  # 当前 batch 的实际样本数
+                for si in range(B_cur):
+                    sample_attn = {
+                        f"layer_{layer_idx}": w[si].cpu().numpy()  # [H, L, L]
+                        for layer_idx, w in enumerate(all_attn_weights)
+                    }
+                    collected_attn.append({
+                        "step": step,
+                        "sample_in_batch": si,
+                        "key": keys[si] if keys else f"step_{step}_s{si}",
+                        "label": int(labels[si].item()),
+                        "pctr": float(predict_ctr[si].item()),
+                        "attn": sample_attn,
+                    })
 
             if step != 0:
                 tt = time.time() - st
@@ -1443,7 +1458,7 @@ def analyze_one_epoch(
                 context_token_num=args.context_token_num,
             )
 
-        avg_time_spend = time_spend / (step - 1)
+        avg_time_spend = time_spend / (step - 1) if step > 1 else 0
         if local_rank == 0:
             print(f"ANALYZING: One Batch AVG Spend Time: {avg_time_spend}")
 
