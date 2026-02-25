@@ -34,10 +34,10 @@ class HSTUBlock(MegatronModule):
         if self.config.fp16:
             self._training_dtype = torch.float16
 
-        self._preprocessor = HSTUBlockPreprocessor(
+        self._preprocessor = HSTUBlockPreprocessor(# item、context info 的MLP部分 && rab - relative attention bias &&  interleave部分 && padding部分 && concatenation部分
             config, is_inference=False
         )  # sequence parallel is from config
-        self._postprocessor = HSTUBlockPostprocessor(
+        self._postprocessor = HSTUBlockPostprocessor(# 注意这里是处理的sel._attention_layers输出，也就是对输出token进行的后处理
             is_inference=False, sequence_parallel=config.sequence_parallel
         )
 

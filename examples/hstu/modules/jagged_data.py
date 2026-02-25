@@ -22,7 +22,7 @@ import torch
 
 
 @dataclasses.dataclass
-class JaggedData:
+class JaggedData:  # nvidia自己设计的序列数据输入模型的数据结构
     """JaggedData is a data structure that holds jagged tensor data, which is commonly used in sequence-based models.
 
     Args:

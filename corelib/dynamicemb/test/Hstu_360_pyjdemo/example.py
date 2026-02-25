@@ -70,7 +70,7 @@ from modules.metric import CustomAUC, CustomCOPC, StreamingAUC, StreamingCOPC, M
 from dataclasses import dataclass
 # from modules.MLP import MLP
 from modules.PReLU_DNN import MLP
-from modules.TransformerBlock import TransformerBlock
+from modules.TransformerBlockv2 import TransformerBlock
 import time
 from datetime import datetime, timedelta
 from utils.common import jagged_to_padded_dense

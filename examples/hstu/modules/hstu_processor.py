@@ -39,8 +39,8 @@ try:
 except ImportError:
     SUPPORT_TRAINING = False
 
-
-def hstu_preprocess_embeddings(
+# 
+def hstu_preprocess_embeddings(# hstu_preprocess_embeddings详细解释一下这个函数呢请问？
     embeddings: Dict[str, JaggedTensor],
     batch: RankingBatch,
     is_inference: bool,
@@ -75,7 +75,7 @@ def hstu_preprocess_embeddings(
     """
     item_jt = embeddings[batch.item_feature_name]  # history + candidate
     dtype = item_jt.values().dtype if dtype is None else dtype
-    sequence_embeddings = item_jt.values().to(dtype)
+    sequence_embeddings = item_jt.values().to(dtype)# 现在是历史交互的物品序列 + 候选集物品序列
     sequence_embeddings_lengths = item_jt.lengths()
     sequence_embeddings_lengths_offsets = item_jt.offsets()
     sequence_max_seqlen = batch.feature_to_max_seqlen[batch.item_feature_name]
@@ -85,7 +85,7 @@ def hstu_preprocess_embeddings(
         jagged_size = sequence_embeddings.size(0)
         embedding_dim = sequence_embeddings.size(1)
 
-        if not is_inference:
+        if not is_inference:# 训练阶段，action 和 item 都是针对历史序列的，需要全部交错
             sequence_embeddings = torch.cat(
                 [sequence_embeddings, action_jt.values().to(dtype)], dim=1
             ).view(2 * jagged_size, embedding_dim)
@@ -94,7 +94,7 @@ def hstu_preprocess_embeddings(
                 sequence_embeddings_lengths_offsets * 2
             )
             sequence_max_seqlen = sequence_max_seqlen * 2
-        else:
+        else:# inference 下，action 只针对历史序列，需要和历史序列的 item 交错，而候选集不需要交错
             action_offsets = action_jt.offsets()
             item_offsets = item_jt.offsets()
             candidates_indptr = item_offsets[: batch.batch_size] + action_jt.lengths()
@@ -125,7 +125,7 @@ def hstu_preprocess_embeddings(
             sequence_max_seqlen += batch.feature_to_max_seqlen[
                 batch.action_feature_name
             ]
-        if item_mlp is not None:
+        if item_mlp is not None:# 对 item embedding 做 mlp 变换
             sequence_embeddings = item_mlp(sequence_embeddings)
 
     if (
@@ -142,7 +142,7 @@ def hstu_preprocess_embeddings(
     contextual_max_seqlen = 0
     contextual_seqlen = None
     contextual_seqlen_offsets = None
-    if len(batch.contextual_feature_names) > 0:
+    if len(batch.contextual_feature_names) > 0:# 拼接所有 Contextual 特征 -> 拼接到主序列前面
         contextual_max_seqlens = [
             batch.feature_to_max_seqlen[name] for name in batch.contextual_feature_names
         ]
@@ -276,7 +276,7 @@ class HSTUBlockPreprocessor(torch.nn.Module):
         self._scaling_seqlen = config.scaling_seqlen
 
     @output_nvtx_hook(nvtx_tag="HSTUBlock preprocess", hook_key_or_attr_name="values")
-    def forward(
+    def forward(# 首先会选择某些特征是否经过MLP处理，然后进行interleave，将action放到item之后，然后给每个样本的token给concatenation起来，然后padding不太理解，最后是会增加rab
         self,
         embeddings: Dict[str, JaggedTensor],
         batch: RankingBatch,
@@ -406,7 +406,7 @@ class HSTUBlockPostprocessor(torch.nn.Module):
 
         sequence_embeddings = sequence_embeddings / torch.linalg.norm(
             sequence_embeddings, ord=2, dim=-1, keepdim=True
-        ).clamp(min=1e-6)
+        ).clamp(min=1e-6)# L2归一化
 
         return JaggedData(
             values=sequence_embeddings,
